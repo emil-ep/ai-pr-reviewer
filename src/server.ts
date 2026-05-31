@@ -12,9 +12,13 @@ import { logger } from './utils/logger.js';
 export class PRReviewerServer {
   private server: Server;
   private githubClient: GitHubClient;
+  private bobApiKey: string;
+  private bobApiEndpoint?: string;
 
-  constructor(githubToken: string) {
+  constructor(githubToken: string, bobApiKey: string, bobApiEndpoint?: string) {
     this.githubClient = new GitHubClient(githubToken);
+    this.bobApiKey = bobApiKey;
+    this.bobApiEndpoint = bobApiEndpoint;
 
     this.server = new Server(
       {
@@ -30,6 +34,7 @@ export class PRReviewerServer {
 
     this.setupToolHandlers();
     logger.info('PR Reviewer MCP Server initialized');
+    logger.info(`Using Bob API: ${bobApiEndpoint || 'default endpoint'}`);
   }
 
   private setupToolHandlers(): void {
