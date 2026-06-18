@@ -39,7 +39,7 @@ export class GrokClient {
 
     try {
       const response = await this.client.chat.completions.create({
-        model: 'grok-2-1212',
+        model: 'grok-2-latest',
         messages: [
           {
             role: 'system',

@@ -1,15 +1,15 @@
+import { BobClient, ReviewResult } from './ai/bob-client.js';
 import { GitHubClient, PRDiff } from './github/client.js';
-import { GrokClient, ReviewResult } from './ai/grok-client.js';
 
 import { logger } from './utils/logger.js';
 
 export class PRReviewer {
   private githubClient: GitHubClient;
-  private grokClient: GrokClient;
+  private bobClient: BobClient;
 
-  constructor(githubToken: string, grokApiKey: string) {
+  constructor(githubToken: string, bobApiEndpoint: string) {
     this.githubClient = new GitHubClient(githubToken);
-    this.grokClient = new GrokClient(grokApiKey);
+    this.bobClient = new BobClient(bobApiEndpoint);
   }
 
   async reviewPR(owner: string, repo: string, prNumber: number): Promise<void> {
@@ -28,9 +28,9 @@ export class PRReviewer {
         prDiff
       );
 
-      // Step 3: Send to Grok for review
-      logger.info('Sending to Grok for analysis...');
-      const review = await this.grokClient.reviewPR({
+      // Step 3: Send to Bob for review
+      logger.info('Sending to Bob for analysis...');
+      const review = await this.bobClient.reviewPR({
         title: prDiff.pr.title,
         description: prDiff.pr.description,
         files: filesWithContent,
@@ -161,7 +161,7 @@ export class PRReviewer {
       (c) => c.severity === 'suggestion'
     ).length;
 
-    let summary = `## 🤖 Grok PR Review\n\n`;
+    let summary = `## 🤖 Bob PR Review\n\n`;
     summary += `${review.summary}\n\n`;
     summary += `### Summary\n`;
     summary += `- 🔴 Critical: ${criticalCount}\n`;
@@ -176,7 +176,7 @@ export class PRReviewer {
       summary += `✅ Looks good! Only minor suggestions.\n\n`;
     }
 
-    summary += `---\n*Powered by Grok AI*`;
+    summary += `---\n*Powered by Bob AI*`;
 
     return summary;
   }

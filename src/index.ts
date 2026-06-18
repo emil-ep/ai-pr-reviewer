@@ -5,7 +5,7 @@ import { logger } from './utils/logger.js';
 
 async function main() {
   const githubToken = process.env.GITHUB_TOKEN;
-  const grokApiKey = process.env.GROK_API_KEY;
+  const bobApiEndpoint = process.env.BOB_API_ENDPOINT;
   const prNumber = process.env.PR_NUMBER;
   const repoOwner = process.env.REPO_OWNER;
   const repoName = process.env.REPO_NAME;
@@ -16,10 +16,10 @@ async function main() {
     process.exit(1);
   }
 
-  if (!grokApiKey) {
-    logger.error('GROK_API_KEY environment variable is required');
-    logger.error('Please add GROK_API_KEY to your GitHub repository secrets');
-    logger.error('Get your API key from: https://console.x.ai/');
+  if (!bobApiEndpoint) {
+    logger.error('BOB_API_ENDPOINT environment variable is required');
+    logger.error('Please add BOB_API_ENDPOINT to your GitHub repository secrets');
+    logger.error('This should be the URL of your hosted Bob Shell Wrapper service');
     process.exit(1);
   }
 
@@ -28,12 +28,12 @@ async function main() {
     process.exit(1);
   }
 
-  logger.info('🤖 Starting Grok PR Reviewer...');
+  logger.info('🤖 Starting Bob PR Reviewer...');
   logger.info(`Repository: ${repoOwner}/${repoName}`);
   logger.info(`PR Number: #${prNumber}`);
 
   try {
-    const reviewer = new PRReviewer(githubToken, grokApiKey);
+    const reviewer = new PRReviewer(githubToken, bobApiEndpoint);
     await reviewer.reviewPR(repoOwner, repoName, parseInt(prNumber));
     
     logger.info('✅ Review completed successfully!');

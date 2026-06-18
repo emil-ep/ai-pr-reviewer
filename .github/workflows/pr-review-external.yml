@@ -1,4 +1,4 @@
-name: Grok PR Review
+name: Bob PR Review
 
 on:
   pull_request:
@@ -22,11 +22,11 @@ jobs:
       issues: write
     
     steps:
-      - name: Checkout Grok PR Reviewer
+      - name: Checkout Bob PR Reviewer
         uses: actions/checkout@v4
         with:
           repository: emil-ep/pr-reviewer  # Your central reviewer repo
-          path: grok-reviewer
+          path: bob-reviewer
       
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -34,11 +34,11 @@ jobs:
           node-version: '20'
       
       - name: Install dependencies
-        working-directory: grok-reviewer
+        working-directory: bob-reviewer
         run: npm ci
       
       - name: Build project
-        working-directory: grok-reviewer
+        working-directory: bob-reviewer
         run: npm run build
       
       - name: Get PR number
@@ -50,11 +50,11 @@ jobs:
             echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
           fi
       
-      - name: Run Grok PR Review
-        working-directory: grok-reviewer
+      - name: Run Bob PR Review
+        working-directory: bob-reviewer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+          BOB_API_ENDPOINT: ${{ secrets.BOB_API_ENDPOINT }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
