@@ -1,84 +1,65 @@
 import { AIClient, PRData, ReviewComment, ReviewResult } from './base-client.js';
 
+import OpenAI from 'openai';
 import { logger } from '../utils/logger.js';
 
-interface BobHealthResponse {
-  status: string;
-  timestamp: string;
-  service: string;
-}
+export class GrokClient implements AIClient {
+  private client: OpenAI;
+  private model: string;
 
-interface BobExecuteResponse {
-  success: boolean;
-  output: string;
-  clean_output: string;
-  error: string;
-  return_code: number;
-  has_internal_warnings: boolean;
-  timestamp: string;
-}
-
-export class BobClient implements AIClient {
-  private apiEndpoint: string;
-
-  constructor(apiEndpoint: string) {
-    this.apiEndpoint = apiEndpoint.replace(/\/$/, ''); // Remove trailing slash
-    logger.info(`Bob client initialized with endpoint: ${this.apiEndpoint}`);
+  constructor(apiKey: string, model: string = 'grok-beta') {
+    this.client = new OpenAI({
+      apiKey,
+      baseURL: 'https://api.x.ai/v1',
+    });
+    this.model = model;
+    logger.info(`Grok client initialized with model: ${this.model}`);
   }
 
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.apiEndpoint}/health`);
-      const data = await response.json() as BobHealthResponse;
-      logger.info(`Bob service health: ${data.status}`);
-      return data.status === 'healthy';
+      await this.client.models.list();
+      logger.info('Grok service is healthy');
+      return true;
     } catch (error) {
-      logger.error('Bob service health check failed:', error);
+      logger.error('Grok service health check failed:', error);
       return false;
     }
   }
 
   async reviewPR(prData: PRData): Promise<ReviewResult> {
-    logger.info(`Reviewing PR: ${prData.title}`);
-
-    // Check if service is healthy
-    const isHealthy = await this.healthCheck();
-    if (!isHealthy) {
-      throw new Error('Bob service is not healthy');
-    }
+    logger.info(`Reviewing PR with Grok: ${prData.title}`);
 
     const prompt = this.buildReviewPrompt(prData);
 
     try {
-      const response = await fetch(`${this.apiEndpoint}/api/v1/execute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          prompt: prompt,
-          accept_license: true,
-        }),
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert code reviewer. Analyze code changes and provide detailed, actionable feedback in JSON format.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.3,
       });
 
-      if (!response.ok) {
-        throw new Error(`Bob API error: ${response.status} ${response.statusText}`);
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('No response from Grok');
       }
 
-      const data = await response.json() as BobExecuteResponse;
-
-      if (!data.success) {
-        throw new Error(`Bob execution failed: ${data.error}`);
-      }
-
-      // Use clean_output for user-friendly response
-      const result = this.parseReviewResponse(data.clean_output || data.output);
+      const result = this.parseReviewResponse(content);
       logger.info(`Review complete: ${result.comments.length} comments generated`);
 
       return result;
     } catch (error) {
-      logger.error('Bob API error:', error);
-      throw new Error(`Failed to get review from Bob: ${error}`);
+      logger.error('Grok API error:', error);
+      throw new Error(`Failed to get review from Grok: ${error}`);
     }
   }
 
@@ -132,7 +113,7 @@ Focus on:
 5. Missing error handling
 6. Code maintainability
 
-Provide specific, actionable feedback with file paths and line numbers.`;
+Provide specific, actionable feedback with file paths and line numbers. Return ONLY the JSON object, no additional text.`;
 
     return prompt;
   }
@@ -140,7 +121,7 @@ Provide specific, actionable feedback with file paths and line numbers.`;
   private parseReviewResponse(content: string): ReviewResult {
     try {
       // Try to extract JSON from the response
-      // Bob might wrap it in markdown code blocks
+      // Grok might wrap it in markdown code blocks
       const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) ||
         content.match(/```\n([\s\S]*?)\n```/) ||
         content.match(/\{[\s\S]*\}/);
@@ -156,13 +137,13 @@ Provide specific, actionable feedback with file paths and line numbers.`;
       }
 
       // If no JSON found, create a simple review from the text
-      logger.warn('Could not parse JSON from Bob response, using text as summary');
+      logger.warn('Could not parse JSON from Grok response, using text as summary');
       return {
         summary: content.slice(0, 500),
         comments: [],
       };
     } catch (error) {
-      logger.warn('Failed to parse Bob response:', error);
+      logger.warn('Failed to parse Grok response:', error);
 
       // Fallback: create a simple review
       return {
@@ -172,3 +153,4 @@ Provide specific, actionable feedback with file paths and line numbers.`;
     }
   }
 }
+

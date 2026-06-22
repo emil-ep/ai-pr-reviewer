@@ -1,15 +1,15 @@
-import { BobClient, ReviewResult } from './ai/bob-client.js';
+import { AIClient, ReviewResult } from './ai/base-client.js';
 import { GitHubClient, PRDiff } from './github/client.js';
 
 import { logger } from './utils/logger.js';
 
 export class PRReviewer {
   private githubClient: GitHubClient;
-  private bobClient: BobClient;
+  private aiClient: AIClient;
 
-  constructor(githubToken: string, bobApiEndpoint: string) {
+  constructor(githubToken: string, aiClient: AIClient) {
     this.githubClient = new GitHubClient(githubToken);
-    this.bobClient = new BobClient(bobApiEndpoint);
+    this.aiClient = aiClient;
   }
 
   async reviewPR(owner: string, repo: string, prNumber: number): Promise<void> {
@@ -28,9 +28,9 @@ export class PRReviewer {
         prDiff
       );
 
-      // Step 3: Send to Bob for review
-      logger.info('Sending to Bob for analysis...');
-      const review = await this.bobClient.reviewPR({
+      // Step 3: Send to AI for review
+      logger.info('Sending to AI for analysis...');
+      const review = await this.aiClient.reviewPR({
         title: prDiff.pr.title,
         description: prDiff.pr.description,
         files: filesWithContent,
@@ -161,7 +161,7 @@ export class PRReviewer {
       (c) => c.severity === 'suggestion'
     ).length;
 
-    let summary = `## 🤖 Bob PR Review\n\n`;
+    let summary = `## 🤖 AI PR Review\n\n`;
     summary += `${review.summary}\n\n`;
     summary += `### Summary\n`;
     summary += `- 🔴 Critical: ${criticalCount}\n`;
@@ -176,7 +176,7 @@ export class PRReviewer {
       summary += `✅ Looks good! Only minor suggestions.\n\n`;
     }
 
-    summary += `---\n*Powered by Bob AI*`;
+    summary += `---\n*Powered by AI Code Review*`;
 
     return summary;
   }
@@ -194,5 +194,3 @@ export class PRReviewer {
     }
   }
 }
-
-// Made with Bob
