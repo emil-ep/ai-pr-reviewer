@@ -44,5 +44,3 @@ class Logger {
 export const logger = new Logger(
   process.env.LOG_LEVEL === 'debug' ? LogLevel.DEBUG : LogLevel.INFO
 );
-
-// Made with Bob

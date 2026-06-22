@@ -177,5 +177,3 @@ export class GitHubClient {
     }
   }
 }
-
-// Made with Bob
