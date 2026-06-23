@@ -1,6 +1,6 @@
 # AI PR Reviewer
 
-Automated PR code reviews using multiple AI providers - Bob, ChatGPT, Claude, or Grok!
+An **AI-agnostic** automated PR code reviewer. Choose your AI provider - Bob, ChatGPT, Claude, Grok, or easily add your own!
 
 ## Quick Setup
 
@@ -11,7 +11,7 @@ Copy the workflow file to your repository:
 ```bash
 # In your repository (e.g., xpense-tracker)
 mkdir -p .github/workflows
-curl -o .github/workflows/ai-pr-review.yml https://raw.githubusercontent.com/emil-ep/pr-reviewer/main/.github/workflows/pr-review-external.yml
+curl -o .github/workflows/ai-pr-review.yml https://raw.githubusercontent.com/emil-ep/ai-pr-reviewer/main/.github/workflows/pr-review-external.yml
 ```
 
 ### 2. Choose Your AI Provider
@@ -22,9 +22,9 @@ Set the `AI_PROVIDER` environment variable to one of: `bob`, `chatgpt`, `claude`
 
 Go to your repository **Settings** → **Secrets and variables** → **Actions** and add the required secrets based on your chosen provider:
 
-#### For Bob (Free, no API key required)
+#### For Bob (Self-hosted)
 - **Name**: `AI_PROVIDER` **Value**: `bob`
-- **Name**: `BOB_API_ENDPOINT` **Value**: Your Bob service URL
+- **Name**: `BOB_API_ENDPOINT` **Value**: Your Bob Shell Wrapper service URL
 
 #### For ChatGPT
 - **Name**: `AI_PROVIDER` **Value**: `chatgpt`
@@ -53,21 +53,27 @@ That's it! Your chosen AI will now automatically review all PRs in your reposito
 
 ## Features
 
-- ✅ **Multiple AI Providers**: Choose between Bob, ChatGPT, Claude, or Grok
+- ✅ **AI-Agnostic Architecture**: Choose any AI provider or add your own
+- ✅ **Provider Flexibility**: Switch providers with a single environment variable
+- ✅ **No Vendor Lock-in**: You control which AI you use
 - ✅ Automatic PR reviews on open/update
 - ✅ Manual trigger with `/review` comment
 - ✅ Inline code comments with severity levels
 - ✅ Summary with critical/warning/suggestion counts
-- ✅ Bob option is completely free - no API costs!
+- ✅ Extensible design for adding new AI providers
 
-## AI Provider Comparison
+## Supported AI Providers
 
-| Provider | Cost | Strengths |
-|----------|------|-----------|
-| **Bob** | Free | No API key needed, good for basic reviews |
-| **ChatGPT** | Paid | Fast, excellent code understanding |
-| **Claude** | Paid | Deep analysis, great for complex code |
-| **Grok** | Paid | Real-time knowledge, modern approach |
+The tool is **AI-agnostic** and currently supports:
+
+| Provider | Type | Setup |
+|----------|------|-------|
+| **Bob** | Self-hosted | Deploy your own Bob Shell Wrapper |
+| **ChatGPT** | API | Add OpenAI API key |
+| **Claude** | API | Add Anthropic API key |
+| **Grok** | API | Add xAI API key |
+
+**Want to add another provider?** The extensible architecture makes it easy! Just implement the `AIClient` interface and add it to the factory.
 
 ## Manual Trigger
 
@@ -77,8 +83,8 @@ Comment `/review` on any PR to trigger a review manually.
 
 ```bash
 # Clone this repo
-git clone https://github.com/emil-ep/pr-reviewer.git
-cd pr-reviewer
+git clone https://github.com/emil-ep/ai-pr-reviewer.git
+cd ai-pr-reviewer
 
 # Install dependencies
 npm install
