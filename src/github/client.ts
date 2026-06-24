@@ -152,6 +152,24 @@ export class GitHubClient {
     }
   }
 
+  async updatePRDescription(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    description: string
+  ): Promise<void> {
+    try {
+      await this.octokit.pulls.update({
+        owner,
+        repo,
+        pull_number: prNumber,
+        body: description,
+      });
+    } catch (error) {
+      throw new Error(`Failed to update PR description: ${error}`);
+    }
+  }
+
   async listPRFiles(
     owner: string,
     repo: string,

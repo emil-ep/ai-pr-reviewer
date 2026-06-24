@@ -55,7 +55,21 @@ export interface PRData {
   };
 }
 
+export interface PRDescriptionResult {
+  description: string;
+  metadata: {
+    provider: string;
+    generatedAt: string;
+    confidence: {
+      summary: 'high' | 'medium' | 'low';
+      changes: 'high' | 'medium' | 'low';
+      testing: 'high' | 'medium' | 'low';
+    };
+  };
+}
+
 export interface AIClient {
   reviewPR(prData: PRData): Promise<ReviewResult>;
+  generatePRDescription?(prData: PRData): Promise<PRDescriptionResult>;
   healthCheck?(): Promise<boolean>;
 }
