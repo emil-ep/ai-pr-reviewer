@@ -1,14 +1,16 @@
 import { AIClient, ReviewResult } from './ai/base-client.js';
 import { GitHubClient, PRDiff } from './github/client.js';
-
+import { PRContextBuilder } from './github/context-builder.js';
 import { logger } from './utils/logger.js';
 
 export class PRReviewer {
   private githubClient: GitHubClient;
+  private contextBuilder: PRContextBuilder;
   private aiClient: AIClient;
 
   constructor(githubToken: string, aiClient: AIClient) {
     this.githubClient = new GitHubClient(githubToken);
+    this.contextBuilder = new PRContextBuilder(githubToken);
     this.aiClient = aiClient;
   }
 
@@ -16,28 +18,35 @@ export class PRReviewer {
     logger.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
     try {
-      // Step 1: Fetch PR data
-      logger.info('Fetching PR diff...');
-      const prDiff = await this.githubClient.fetchPRDiff(owner, repo, prNumber);
+      // Step 1: Build comprehensive PR context
+      logger.info('Building comprehensive PR context...');
+      const context = await this.contextBuilder.buildContext(owner, repo, prNumber);
 
-      // Step 2: Get full file contents for context
-      logger.info(`Fetching content for ${prDiff.files.length} files...`);
-      const filesWithContent = await this.fetchFileContents(
-        owner,
-        repo,
-        prDiff
-      );
+      logger.info(`Context gathered:
+        - ${context.commits.length} commits
+        - ${context.linkedIssues.length} linked issues
+        - ${context.relatedFiles.length} related files
+        - ${context.affectedDependencies.length} affected dependencies`);
 
-      // Step 3: Send to AI for review
-      logger.info('Sending to AI for analysis...');
+      // Step 2: Send enhanced context to AI for review
+      logger.info('Sending enhanced context to AI for analysis...');
       const review = await this.aiClient.reviewPR({
-        title: prDiff.pr.title,
-        description: prDiff.pr.description,
-        files: filesWithContent,
+        title: context.title,
+        description: context.description,
+        author: context.author,
+        baseBranch: context.baseBranch,
+        headBranch: context.headBranch,
+        commits: context.commits,
+        linkedIssues: context.linkedIssues,
+        relatedFiles: context.relatedFiles,
+        affectedDependencies: context.affectedDependencies,
+        files: context.changedFiles,
+        stats: context.stats,
       });
 
-      // Step 4: Post review comments
+      // Step 3: Post review comments
       logger.info(`Posting review with ${review.comments.length} comments...`);
+      const prDiff = await this.githubClient.fetchPRDiff(owner, repo, prNumber);
       await this.postReview(owner, repo, prNumber, prDiff.pr.head_sha, review);
 
       logger.info('✅ Review completed successfully');
@@ -47,67 +56,6 @@ export class PRReviewer {
     }
   }
 
-  private async fetchFileContents(
-    owner: string,
-    repo: string,
-    prDiff: PRDiff
-  ): Promise<Array<{ filename: string; patch?: string; content?: string }>> {
-    const filesWithContent = [];
-
-    for (const file of prDiff.files.slice(0, 10)) {
-      // Limit to 10 files
-      try {
-        const fileData: { filename: string; patch?: string; content?: string } = {
-          filename: file.filename,
-          patch: file.patch,
-        };
-
-        // Only fetch content for code files (not too large)
-        if (file.changes < 500 && this.isCodeFile(file.filename)) {
-          try {
-            const content = await this.githubClient.getFileContent(
-              owner,
-              repo,
-              file.filename,
-              prDiff.pr.head_sha
-            );
-            fileData.content = content.content;
-          } catch (error) {
-            logger.warn(`Could not fetch content for ${file.filename}`);
-          }
-        }
-
-        filesWithContent.push(fileData);
-      } catch (error) {
-        logger.warn(`Error processing file ${file.filename}:`, error);
-      }
-    }
-
-    return filesWithContent;
-  }
-
-  private isCodeFile(filename: string): boolean {
-    const codeExtensions = [
-      '.ts',
-      '.tsx',
-      '.js',
-      '.jsx',
-      '.py',
-      '.java',
-      '.go',
-      '.rs',
-      '.cpp',
-      '.c',
-      '.h',
-      '.cs',
-      '.rb',
-      '.php',
-      '.swift',
-      '.kt',
-    ];
-
-    return codeExtensions.some((ext) => filename.endsWith(ext));
-  }
 
   private async postReview(
     owner: string,

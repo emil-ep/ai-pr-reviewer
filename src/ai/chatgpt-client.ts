@@ -62,22 +62,70 @@ export class ChatGPTClient implements AIClient {
   }
 
   private buildReviewPrompt(prData: PRData): string {
-    let prompt = `You are an expert code reviewer. Please review this Pull Request and provide detailed feedback.
+    let prompt = `You are an expert code reviewer. Please review this Pull Request with comprehensive context.
 
 # Pull Request Review
 
-## PR Title
-${prData.title}
+## PR Metadata
+- **Title:** ${prData.title}
+- **Author:** ${prData.author}
+- **Branch:** ${prData.headBranch} → ${prData.baseBranch}
+- **Stats:** ${prData.stats?.totalFiles || 0} files, +${prData.stats?.totalAdditions || 0}/-${prData.stats?.totalDeletions || 0} lines
 
 ## PR Description
 ${prData.description || 'No description provided'}
 
-## Changed Files
-
 `;
 
+    // Add commit history context
+    if (prData.commits && prData.commits.length > 0) {
+      prompt += `## Commit History (${prData.commits.length} commits)\n`;
+      prompt += 'Understanding the "what" and "why" behind changes:\n\n';
+      for (const commit of prData.commits.slice(0, 10)) {
+        prompt += `- **${commit.sha.slice(0, 7)}** by ${commit.author}: ${commit.message}\n`;
+      }
+      prompt += '\n';
+    }
+
+    // Add linked issues context
+    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
+      prompt += `## Linked Issues (${prData.linkedIssues.length})\n`;
+      prompt += 'Business context and requirements:\n\n';
+      for (const issue of prData.linkedIssues) {
+        prompt += `### Issue #${issue.number}: ${issue.title}\n`;
+        prompt += `- **State:** ${issue.state}\n`;
+        prompt += `- **Labels:** ${issue.labels.join(', ') || 'none'}\n`;
+        prompt += `- **Description:** ${issue.body.slice(0, 300)}${issue.body.length > 300 ? '...' : ''}\n\n`;
+      }
+    }
+
+    // Add affected dependencies
+    if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
+      prompt += `## Affected Dependencies\n`;
+      prompt += `${prData.affectedDependencies.join(', ')}\n\n`;
+    }
+
+    // Add related files context
+    if (prData.relatedFiles && prData.relatedFiles.length > 0) {
+      prompt += `## Related Files (${prData.relatedFiles.length})\n`;
+      prompt += 'Files that may be impacted by these changes:\n\n';
+      for (const relatedFile of prData.relatedFiles) {
+        prompt += `### ${relatedFile.path}\n`;
+        prompt += `**Reason:** ${relatedFile.reason}\n`;
+        if (relatedFile.content) {
+          prompt += `**Content:**\n\`\`\`\n${relatedFile.content.slice(0, 2000)}\n\`\`\`\n\n`;
+        }
+      }
+    }
+
+    // Add changed files
+    prompt += `## Changed Files (${prData.files.length})\n\n`;
     for (const file of prData.files) {
-      prompt += `### File: ${file.filename}\n\n`;
+      prompt += `### File: ${file.filename}`;
+      if (file.status) {
+        prompt += ` (${file.status})`;
+      }
+      prompt += '\n\n';
 
       if (file.patch) {
         prompt += `**Changes (diff):**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
@@ -89,29 +137,35 @@ ${prData.description || 'No description provided'}
     }
 
     prompt += `
-Please analyze these changes and provide your review in the following JSON format:
+## Review Instructions
+
+Please analyze these changes WITH THE FULL CONTEXT PROVIDED and provide your review in JSON format:
 
 {
-  "summary": "Brief overview of changes and overall assessment",
+  "summary": "Brief overview considering the commits, linked issues, and business context",
   "comments": [
     {
       "path": "file/path.ts",
       "line": 42,
       "severity": "critical",
-      "message": "Detailed explanation of the issue and how to fix it"
+      "message": "Detailed explanation referencing the context (commits, issues, related files)"
     }
   ]
 }
 
 Focus on:
-1. Security vulnerabilities (SQL injection, XSS, authentication issues)
-2. Logic errors and bugs
-3. Performance issues
-4. Best practices violations
-5. Missing error handling
-6. Code maintainability
+1. **Alignment with linked issues** - Do changes address the stated requirements?
+2. **Commit message quality** - Are commits well-structured and meaningful?
+3. **Impact on related files** - Will changes break existing functionality?
+4. **Dependency changes** - Are new dependencies necessary and secure?
+5. **Security vulnerabilities** - SQL injection, XSS, authentication issues
+6. **Logic errors and bugs** - Considering the broader context
+7. **Performance issues** - Especially with dependency changes
+8. **Best practices violations**
+9. **Missing error handling**
+10. **Code maintainability**
 
-Provide specific, actionable feedback with file paths and line numbers.`;
+Provide specific, actionable feedback that references the context (e.g., "This change addresses issue #123 but...").`;
 
     return prompt;
   }
