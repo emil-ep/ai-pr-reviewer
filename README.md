@@ -48,11 +48,17 @@ That's it! Your chosen AI will now automatically review all PRs in your reposito
 ## How It Works
 
 1. **Trigger**: When a PR is opened/updated or someone comments `/review`
-2. **Analysis**: Your chosen AI fetches the PR diff and analyzes the code changes
-3. **Review**: AI posts a summary and inline comments on the PR
+2. **Context Gathering**: Fetches comprehensive context including:
+   - Commit history (what changed and why)
+   - Linked issues (business requirements)
+   - Related files (test files, configs)
+   - Dependency changes (security impact)
+3. **Analysis**: Your chosen AI analyzes code with full context
+4. **Review**: AI posts context-aware summary and inline comments
 
 ## Features
 
+### Core Features
 - ✅ **AI-Agnostic Architecture**: Choose any AI provider or add your own
 - ✅ **Provider Flexibility**: Switch providers with a single environment variable
 - ✅ **No Vendor Lock-in**: You control which AI you use
@@ -61,6 +67,15 @@ That's it! Your chosen AI will now automatically review all PRs in your reposito
 - ✅ Inline code comments with severity levels
 - ✅ Summary with critical/warning/suggestion counts
 - ✅ Extensible design for adding new AI providers
+
+### 🆕 Enhanced Context System
+- ✅ **Commit History Analysis**: Understands the evolution of changes
+- ✅ **Linked Issue Detection**: Verifies alignment with requirements
+- ✅ **Related Files Detection**: Identifies impacted test files and configs
+- ✅ **Dependency Impact Analysis**: Tracks package changes and security risks
+- ✅ **Context-Aware Reviews**: AI references commits, issues, and related files
+
+[Learn more about Enhanced Context →](./ENHANCED_CONTEXT.md)
 
 ## Supported AI Providers
 
