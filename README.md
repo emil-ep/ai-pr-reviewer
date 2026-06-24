@@ -216,6 +216,61 @@ node dist/index.js
 └── .github/workflows/
     └── pr-review-external.yml      # Unified GitHub Actions workflow
 ```
+## 🎯 Bonus: AI Commit Message Suggester
+
+Get AI-generated commit messages automatically when you run `git commit` in **any repository**!
+
+### Quick Setup
+
+```bash
+# 1. Build and setup
+npm run build
+./install-git-hook.sh --setup
+
+# 2. Configure (add to ~/.bashrc or ~/.zshrc)
+export AI_PROVIDER="chatgpt"
+export OPENAI_API_KEY="sk-your-key-here"
+
+# 3. Install globally
+./install-git-hook.sh --global
+
+# 4. Use in any repo
+cd /path/to/any/repo
+git commit  # AI suggestions appear automatically!
+```
+
+### Commands
+
+```bash
+# Install hook globally (all repos)
+./install-git-hook.sh --global
+
+# Install in current repo only
+./install-git-hook.sh --local
+
+# Uninstall
+./install-git-hook.sh --uninstall-global
+```
+
+### How It Works
+
+When you run `git commit`, the hook:
+1. Analyzes your staged changes (token-optimized)
+2. Generates 3 commit message suggestions using AI
+3. Shows them as comments in your editor
+4. You uncomment one or write your own
+
+**Example:**
+```
+# 🤖 AI-Generated Commit Message Suggestions
+# 
+# 1. feat(auth): add OAuth 2.0 authentication
+#    Confidence: high
+#
+# 2. feat(auth): implement OAuth authentication flow
+#    Confidence: medium
+```
+
 
 ## Requirements
 

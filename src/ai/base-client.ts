@@ -68,8 +68,45 @@ export interface PRDescriptionResult {
   };
 }
 
+export interface GitDiffSummary {
+  totalFiles: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  files: Array<{
+    path: string;
+    additions: number;
+    deletions: number;
+    status: 'added' | 'modified' | 'deleted' | 'renamed';
+  }>;
+  modifiedFunctions?: Array<{
+    file: string;
+    name: string;
+    type: 'function' | 'class' | 'method' | 'interface';
+  }>;
+  criticalChanges?: string[]; // First 50 lines of most important changes
+}
+
+export interface CommitMessageSuggestion {
+  type: 'feat' | 'fix' | 'docs' | 'style' | 'refactor' | 'test' | 'chore' | 'perf' | 'ci' | 'build' | 'revert';
+  scope?: string;
+  subject: string;
+  body?: string;
+  breaking?: boolean;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+export interface CommitMessageResult {
+  suggestions: CommitMessageSuggestion[];
+  metadata: {
+    provider: string;
+    generatedAt: string;
+    tokensUsed?: number;
+  };
+}
+
 export interface AIClient {
   reviewPR(prData: PRData): Promise<ReviewResult>;
   generatePRDescription?(prData: PRData): Promise<PRDescriptionResult>;
+  generateCommitMessage?(diffSummary: GitDiffSummary): Promise<CommitMessageResult>;
   healthCheck?(): Promise<boolean>;
 }
