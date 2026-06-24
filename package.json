@@ -12,6 +12,7 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "generate-description": "node dist/generate-description.js",
+    "suggest-commit": "node dist/suggest-commit.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [

@@ -1,4 +1,4 @@
-import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
+import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
 
 import OpenAI from 'openai';
 import { logger } from '../utils/logger.js';
@@ -107,6 +107,175 @@ export class ChatGPTClient implements AIClient {
     } catch (error) {
       logger.error('ChatGPT API error:', error);
       throw new Error(`Failed to generate PR description with ChatGPT: ${error}`);
+    }
+  }
+
+  async generateCommitMessage(diffSummary: GitDiffSummary): Promise<CommitMessageResult> {
+    logger.info('Generating commit message suggestions with ChatGPT');
+
+    const prompt = this.buildCommitMessagePrompt(diffSummary);
+
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an expert at writing clear, concise commit messages following Conventional Commits specification. Generate multiple commit message options in JSON format.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.4,
+        response_format: { type: 'json_object' },
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('No response from ChatGPT');
+      }
+
+      const result = this.parseCommitMessageResponse(content);
+      logger.info(`Generated ${result.suggestions.length} commit message suggestions`);
+
+      return {
+        suggestions: result.suggestions,
+        metadata: {
+          provider: 'ChatGPT',
+          generatedAt: new Date().toISOString(),
+          tokensUsed: response.usage?.total_tokens,
+        },
+      };
+    } catch (error) {
+      logger.error('ChatGPT API error:', error);
+      throw new Error(`Failed to generate commit message with ChatGPT: ${error}`);
+    }
+  }
+
+  private buildCommitMessagePrompt(diffSummary: GitDiffSummary): string {
+    let prompt = `Generate 3 commit message suggestions following Conventional Commits specification.
+
+# Change Summary
+
+## Statistics
+- **Files Changed:** ${diffSummary.totalFiles}
+- **Additions:** +${diffSummary.totalAdditions}
+- **Deletions:** -${diffSummary.totalDeletions}
+
+## Modified Files
+`;
+
+    for (const file of diffSummary.files.slice(0, 15)) {
+      const statusEmoji = {
+        added: '✨',
+        modified: '📝',
+        deleted: '🗑️',
+        renamed: '📋',
+      }[file.status];
+      prompt += `${statusEmoji} \`${file.path}\` (+${file.additions} -${file.deletions})\n`;
+    }
+
+    if (diffSummary.files.length > 15) {
+      prompt += `... and ${diffSummary.files.length - 15} more files\n`;
+    }
+
+    if (diffSummary.modifiedFunctions && diffSummary.modifiedFunctions.length > 0) {
+      prompt += `\n## Modified Functions/Classes\n`;
+      for (const func of diffSummary.modifiedFunctions.slice(0, 10)) {
+        const typeEmoji = {
+          function: '⚡',
+          class: '🏛️',
+          method: '🔨',
+          interface: '📐',
+        }[func.type];
+        prompt += `${typeEmoji} \`${func.name}\` in ${func.file}\n`;
+      }
+    }
+
+    if (diffSummary.criticalChanges && diffSummary.criticalChanges.length > 0) {
+      prompt += `\n## Key Code Changes (Sample)\n\`\`\`diff\n`;
+      prompt += diffSummary.criticalChanges.slice(0, 30).join('\n');
+      prompt += `\n\`\`\`\n`;
+    }
+
+    prompt += `
+# Instructions
+
+Generate 3 commit message suggestions in JSON format following Conventional Commits:
+
+Format: \`<type>(<scope>): <subject>\`
+
+**Types:**
+- \`feat\`: New feature
+- \`fix\`: Bug fix
+- \`docs\`: Documentation only
+- \`style\`: Code style (formatting, semicolons, etc.)
+- \`refactor\`: Code refactoring
+- \`perf\`: Performance improvement
+- \`test\`: Adding/updating tests
+- \`build\`: Build system or dependencies
+- \`ci\`: CI configuration
+- \`chore\`: Other changes (maintenance)
+- \`revert\`: Revert previous commit
+
+**Requirements:**
+1. Subject line: 50 chars max, imperative mood, no period
+2. Body (optional): Explain what and why, not how
+3. Breaking changes: Add "BREAKING CHANGE:" in body if applicable
+4. Provide 3 suggestions: one concise, one detailed, one alternative perspective
+5. Assign confidence: high (obvious), medium (likely), low (uncertain)
+
+Return JSON:
+{
+  "suggestions": [
+    {
+      "type": "feat",
+      "scope": "auth",
+      "subject": "add OAuth 2.0 authentication",
+      "body": "Implement OAuth 2.0 flow with Google provider\\n\\nAdds token refresh mechanism and secure session handling",
+      "breaking": false,
+      "confidence": "high"
+    }
+  ]
+}`;
+
+    return prompt;
+  }
+
+  private parseCommitMessageResponse(content: string): { suggestions: CommitMessageResult['suggestions'] } {
+    try {
+      const parsed = JSON.parse(content);
+      
+      if (!parsed.suggestions || !Array.isArray(parsed.suggestions)) {
+        throw new Error('Invalid response format');
+      }
+
+      return {
+        suggestions: parsed.suggestions.map((s: any) => ({
+          type: s.type || 'chore',
+          scope: s.scope,
+          subject: s.subject || 'update code',
+          body: s.body,
+          breaking: s.breaking || false,
+          confidence: s.confidence || 'medium',
+        })),
+      };
+    } catch (error) {
+      logger.warn('Failed to parse commit message response:', error);
+      
+      // Fallback: generate a basic suggestion
+      return {
+        suggestions: [
+          {
+            type: 'chore',
+            subject: 'update code',
+            confidence: 'low',
+            breaking: false,
+          },
+        ],
+      };
     }
   }
 
