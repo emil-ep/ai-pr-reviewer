@@ -1,6 +1,6 @@
 # AI PR Reviewer
 
-An **AI-agnostic** automated PR code reviewer. Choose your AI provider - Bob, ChatGPT, Claude, Grok, or easily add your own!
+An **AI-agnostic** automated PR assistant. Choose your AI provider - Bob, ChatGPT, Claude, Grok, or easily add your own!
 
 ## Quick Setup
 
@@ -11,7 +11,7 @@ Copy the workflow file to your repository:
 ```bash
 # In your repository (e.g., xpense-tracker)
 mkdir -p .github/workflows
-curl -o .github/workflows/ai-pr-review.yml https://raw.githubusercontent.com/emil-ep/ai-pr-reviewer/main/.github/workflows/pr-review-external.yml
+curl -o .github/workflows/ai-pr-assistant.yml https://raw.githubusercontent.com/emil-ep/ai-pr-reviewer/main/.github/workflows/pr-review-external.yml
 ```
 
 ### 2. Choose Your AI Provider
@@ -43,18 +43,40 @@ Go to your repository **Settings** → **Secrets and variables** → **Actions**
 
 ### 4. Done!
 
-That's it! Your chosen AI will now automatically review all PRs in your repository.
+That's it! Your AI assistant will now:
+- ✅ **Auto-generate PR descriptions** when you create a PR (if description is empty)
+- ✅ **Review code** when you comment `/review` on a PR
 
 ## How It Works
 
-1. **Trigger**: When a PR is opened/updated or someone comments `/review`
-2. **Context Gathering**: Fetches comprehensive context including:
+### Automatic PR Description Generation
+
+When you create a new PR **without a description**, the AI automatically:
+
+1. **Analyzes Context**: Fetches comprehensive context including:
    - Commit history (what changed and why)
    - Linked issues (business requirements)
    - Related files (test files, configs)
    - Dependency changes (security impact)
-3. **Analysis**: Your chosen AI analyzes code with full context
-4. **Review**: AI posts context-aware summary and inline comments
+
+2. **Generates Description**: Creates an industry-standard PR description with:
+   - Summary of changes
+   - Detailed change list
+   - Impact analysis
+   - Testing information
+   - Related issues
+
+3. **Updates PR**: Automatically updates the PR with the generated description
+
+**You can edit the description** if you want to make changes!
+
+### Manual Code Review
+
+Comment `/review` on any PR to trigger a comprehensive code review. The AI will:
+
+1. **Analyze Changes**: Reviews all modified files
+2. **Find Issues**: Identifies bugs, security vulnerabilities, performance issues
+3. **Post Comments**: Adds inline comments and a summary
 
 ## Features
 
@@ -62,11 +84,11 @@ That's it! Your chosen AI will now automatically review all PRs in your reposito
 - ✅ **AI-Agnostic Architecture**: Choose any AI provider or add your own
 - ✅ **Provider Flexibility**: Switch providers with a single environment variable
 - ✅ **No Vendor Lock-in**: You control which AI you use
-- ✅ Automatic PR reviews on open/update
-- ✅ Manual trigger with `/review` comment
-- ✅ Inline code comments with severity levels
-- ✅ Summary with critical/warning/suggestion counts
-- ✅ Extensible design for adding new AI providers
+- ✅ **Auto PR Descriptions**: Generates descriptions when PR is created (if empty)
+- ✅ **Manual Code Review**: Trigger with `/review` comment
+- ✅ **Inline code comments** with severity levels
+- ✅ **Summary** with critical/warning/suggestion counts
+- ✅ **Extensible design** for adding new AI providers
 
 ### 🆕 Enhanced Context System
 - ✅ **Commit History Analysis**: Understands the evolution of changes
@@ -76,6 +98,15 @@ That's it! Your chosen AI will now automatically review all PRs in your reposito
 - ✅ **Context-Aware Reviews**: AI references commits, issues, and related files
 
 [Learn more about Enhanced Context →](./ENHANCED_CONTEXT.md)
+
+### 🆕 Auto PR Description Generation
+- ✅ **Automatic PR Descriptions**: AI generates comprehensive descriptions when PRs are created
+- ✅ **Industry Standards**: Follows Conventional Commits and GitHub PR templates
+- ✅ **AI Transparency**: Clearly marks AI-generated content
+- ✅ **Context-Aware**: Analyzes commits, issues, files, and dependencies
+- ✅ **Editable**: You can modify the generated description
+
+[Learn more about Auto PR Descriptions →](./AUTO_PR_DESCRIPTION.md)
 
 ## Supported AI Providers
 
@@ -90,9 +121,32 @@ The tool is **AI-agnostic** and currently supports:
 
 **Want to add another provider?** The extensible architecture makes it easy! Just implement the `AIClient` interface and add it to the factory.
 
-## Manual Trigger
+## Usage
 
-Comment `/review` on any PR to trigger a review manually.
+### Auto PR Description (Automatic)
+
+Simply create a PR without a description:
+
+```bash
+git checkout -b feature/new-feature
+# Make changes
+git commit -m "feat: add new feature"
+git push origin feature/new-feature
+# Create PR without description - AI generates it automatically!
+```
+
+### Code Review (Manual)
+
+Comment `/review` on any PR to trigger a review:
+
+```
+/review
+```
+
+The AI will analyze the code and post:
+- Summary with issue counts
+- Inline comments on specific lines
+- Suggestions for improvements
 
 ## Local Testing
 
@@ -129,6 +183,11 @@ export REPO_NAME=your-repo
 
 # Build and run
 npm run build
+
+# For PR description generation
+node dist/generate-description.js
+
+# For PR review
 node dist/index.js
 ```
 
@@ -137,26 +196,30 @@ node dist/index.js
 ```
 .
 ├── src/
-│   ├── index.ts              # Entry point
-│   ├── reviewer.ts           # Main review orchestrator
+│   ├── index.ts                    # Entry point for PR review
+│   ├── generate-description.ts     # Entry point for description generation
+│   ├── reviewer.ts                 # Main review orchestrator
 │   ├── ai/
-│   │   ├── base-client.ts    # AI client interface
-│   │   ├── client-factory.ts # Factory for creating AI clients
-│   │   ├── bob-client.ts     # Bob API integration
-│   │   ├── chatgpt-client.ts # ChatGPT integration
-│   │   ├── claude-client.ts  # Claude integration
-│   │   └── grok-client.ts    # Grok integration
+│   │   ├── base-client.ts          # AI client interface
+│   │   ├── client-factory.ts       # Factory for creating AI clients
+│   │   ├── bob-client.ts           # Bob API integration
+│   │   ├── chatgpt-client.ts       # ChatGPT integration
+│   │   ├── claude-client.ts        # Claude integration
+│   │   └── grok-client.ts          # Grok integration
 │   ├── github/
-│   │   └── client.ts         # GitHub API wrapper
+│   │   ├── client.ts               # GitHub API wrapper
+│   │   └── context-builder.ts      # PR context builder
+│   ├── services/
+│   │   └── pr-description-generator.ts  # Description generation service
 │   └── utils/
-│       └── logger.ts         # Logging utility
+│       └── logger.ts               # Logging utility
 └── .github/workflows/
-    └── pr-review-external.yml # GitHub Actions workflow
+    └── pr-review-external.yml      # Unified GitHub Actions workflow
 ```
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 18+
 - GitHub repository with Actions enabled
 - API credentials for your chosen AI provider:
   - **Bob**: Bob Shell Wrapper service endpoint (free)
