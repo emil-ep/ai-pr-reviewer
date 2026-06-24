@@ -1,6 +1,6 @@
-import { GitDiffSummary } from '../ai/base-client';
+import { GitDiffSummary } from '../ai/base-client.js';
 import { execSync } from 'child_process';
-import { logger } from './logger';
+import { logger } from './logger.js';
 
 export class GitDiffAnalyzer {
   private readonly EXCLUDED_FILES = [

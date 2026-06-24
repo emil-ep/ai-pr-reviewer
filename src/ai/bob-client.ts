@@ -1,4 +1,4 @@
-import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
+import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
 
 import { logger } from '../utils/logger.js';
 
@@ -23,7 +23,7 @@ export class BobClient implements AIClient {
 
   constructor(apiEndpoint: string) {
     this.apiEndpoint = apiEndpoint.replace(/\/$/, ''); // Remove trailing slash
-    logger.info(`Bob client initialized with endpoint: ${this.apiEndpoint}`);
+    // logger.info(`Bob client initialized with endpoint: ${this.apiEndpoint}`);
   }
 
   async healthCheck(): Promise<boolean> {
@@ -308,6 +308,156 @@ Provide specific, actionable feedback with file paths and line numbers.`;
         summary: content.slice(0, 500),
         comments: [],
       };
+    }
+  }
+
+  async generateCommitMessage(diffSummary: GitDiffSummary): Promise<CommitMessageResult> {
+    logger.info('Generating commit message with Bob');
+    
+    const isHealthy = await this.healthCheck();
+    if (!isHealthy) {
+      throw new Error('Bob service is not healthy');
+    }
+
+    const prompt = this.buildCommitMessagePrompt(diffSummary);
+
+    try {
+      const response = await fetch(`${this.apiEndpoint}/api/v1/execute`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: prompt,
+          accept_license: true,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Bob API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as BobExecuteResponse;
+
+      if (!data.success) {
+        throw new Error(`Bob execution failed: ${data.error}`);
+      }
+
+      const content = data.clean_output || data.output;
+      const result = this.parseCommitMessageResponse(content);
+
+      logger.info(`Generated ${result.suggestions.length} commit message suggestions`);
+
+      return result;
+    } catch (error) {
+      logger.error('Bob API error:', error);
+      throw new Error(`Failed to generate commit message with Bob: ${error}`);
+    }
+  }
+
+  private buildCommitMessagePrompt(diffSummary: GitDiffSummary): string {
+    let prompt = `Generate 3 commit message suggestions following Conventional Commits specification.
+
+# Git Diff Summary
+
+## Statistics
+- Files changed: ${diffSummary.totalFiles}
+- Lines added: ${diffSummary.totalAdditions}
+- Lines deleted: ${diffSummary.totalDeletions}
+
+## Modified Files
+`;
+
+    for (const file of diffSummary.files.slice(0, 10)) {
+      prompt += `- ${file.path} (${file.status}): +${file.additions}/-${file.deletions}\n`;
+    }
+
+    if (diffSummary.modifiedFunctions && diffSummary.modifiedFunctions.length > 0) {
+      prompt += `\n## Modified Functions/Classes\n`;
+      for (const func of diffSummary.modifiedFunctions.slice(0, 10)) {
+        prompt += `- ${func.type} ${func.name} in ${func.file}\n`;
+      }
+    }
+
+    if (diffSummary.criticalChanges && diffSummary.criticalChanges.length > 0) {
+      prompt += `\n## Key Changes (first 50 lines)\n\`\`\`diff\n`;
+      prompt += diffSummary.criticalChanges.slice(0, 50).join('\n');
+      prompt += `\n\`\`\`\n`;
+    }
+
+    prompt += `
+
+# Instructions
+
+Generate 3 commit message suggestions in JSON format:
+
+{
+  "suggestions": [
+    {
+      "type": "feat|fix|docs|style|refactor|perf|test|chore",
+      "scope": "optional scope",
+      "subject": "concise description",
+      "body": "optional detailed explanation",
+      "breaking": false,
+      "confidence": "high|medium|low"
+    }
+  ]
+}
+
+Requirements:
+1. Follow Conventional Commits: type(scope): subject
+2. Subject: imperative mood, lowercase, no period, max 50 chars
+3. Body: explain what and why (optional)
+4. Confidence: based on clarity of changes
+5. Order by confidence (best first)
+
+Return ONLY the JSON, no markdown formatting.`;
+
+    return prompt;
+  }
+
+  private parseCommitMessageResponse(content: string): CommitMessageResult {
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) ||
+        content.match(/```\n([\s\S]*?)\n```/) ||
+        content.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        const jsonStr = jsonMatch[1] || jsonMatch[0];
+        const parsed = JSON.parse(jsonStr);
+
+        if (parsed.suggestions && Array.isArray(parsed.suggestions)) {
+          return {
+            suggestions: parsed.suggestions,
+            metadata: {
+              provider: 'Bob',
+              generatedAt: new Date().toISOString(),
+              tokensUsed: 0, // Bob doesn't provide token count
+            },
+          };
+        }
+      }
+
+      // Fallback: create suggestions from text
+      logger.warn('Could not parse JSON from Bob response, creating fallback suggestions');
+      return {
+        suggestions: [
+          {
+            type: 'chore',
+            subject: 'update code',
+            confidence: 'low',
+          },
+        ],
+        metadata: {
+          provider: 'Bob',
+          generatedAt: new Date().toISOString(),
+          tokensUsed: 0,
+        },
+      };
+    } catch (error) {
+      logger.error('Failed to parse Bob commit message response:', error);
+      throw new Error('Failed to parse commit message suggestions from Bob');
     }
   }
 }
