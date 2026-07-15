@@ -272,6 +272,73 @@ When you run `git commit`, the hook:
 ```
 
 
+### Troubleshooting: Hook Not Triggering
+
+#### 1. Check execute permissions
+
+The hook file must be executable. Verify with:
+
+```bash
+ls -la .git/hooks/prepare-commit-msg
+```
+
+If the execute bit is missing, fix it:
+
+```bash
+chmod +x .git/hooks/prepare-commit-msg
+```
+
+#### 2. Check for a `core.hooksPath` override
+
+Git's `core.hooksPath` setting redirects hook lookup to a custom directory, **completely bypassing** `.git/hooks/`. Security tools such as **HashiCorp Vault Radar**, Husky, and lefthook commonly set this during installation.
+
+Check whether an override is active:
+
+```bash
+git config --list | grep hookspath
+```
+
+If you see output like:
+
+```
+core.hookspath=/opt/vault-radar/hooks
+```
+
+Git will look for hooks **only** in that directory — the file in `.git/hooks/` will never be called.
+
+To find out which config file set it:
+
+```bash
+git config --show-origin core.hooksPath
+```
+
+**Fix — copy the hook into the overridden directory:**
+
+```bash
+sudo cp ~/.bob-pr-reviewer/dist/suggest-commit-hook.js /opt/vault-radar/hooks/prepare-commit-msg
+# Adjust the destination path to match whatever core.hooksPath points to
+```
+
+> **Why does this happen?** Tools like HashiCorp Vault Radar write `hooksPath` into your global `~/.gitconfig` during installation so their scanner runs on every commit across all repos. This is expected behaviour — you just need to place your hook alongside theirs in the same directory.
+
+#### 3. Test the hook manually
+
+Run the hook script directly to confirm it works independently of git:
+
+```bash
+echo "test" > /tmp/test-msg.txt
+bash <path-to-repo>/.git/hooks/prepare-commit-msg /tmp/test-msg.txt
+cat /tmp/test-msg.txt
+```
+
+You should see AI-generated suggestions appended to the file.
+
+#### 4. The `-m` flag bypasses the hook intentionally
+
+The hook skips execution when you supply a message via `-m`, use a template (`-t`), or during squash/merge commits. Always use a bare `git commit` (no flags) to trigger suggestions.
+
+---
+
 ## Requirements
 
 - Node.js 18+
