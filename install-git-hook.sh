@@ -78,17 +78,20 @@ install_local() {
 COMMIT_MSG_FILE=$1
 COMMIT_SOURCE=$2
 
-# Only run for regular commits (not merge, squash, etc.)
-if [ -z "$COMMIT_SOURCE" ] || [ "$COMMIT_SOURCE" = "message" ]; then
-    # Try to find the AI commit suggester
-    if [ -f "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" ]; then
-        # Run the hook version (writes to commit message file)
-        node "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" "$COMMIT_MSG_FILE" 2>/dev/null
-    else
-        echo "# ⚠️  AI commit suggester not found." >> "$COMMIT_MSG_FILE"
-        echo "# Install with: cd /path/to/Bob-PR-reviewer && ./install-git-hook.sh --setup" >> "$COMMIT_MSG_FILE"
-        echo "#" >> "$COMMIT_MSG_FILE"
-    fi
+# Skip when the user already supplied a message via -m / --message,
+# a template (-t), a squash, or a merge — only run for bare `git commit`.
+if [ -n "$COMMIT_SOURCE" ]; then
+    exit 0
+fi
+
+# Try to find the AI commit suggester
+if [ -f "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" ]; then
+    # Run the hook version (writes to commit message file)
+    node "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" "$COMMIT_MSG_FILE" 2>/dev/null
+else
+    echo "# ⚠️  AI commit suggester not found." >> "$COMMIT_MSG_FILE"
+    echo "# Install with: cd /path/to/Bob-PR-reviewer && ./install-git-hook.sh --setup" >> "$COMMIT_MSG_FILE"
+    echo "#" >> "$COMMIT_MSG_FILE"
 fi
 HOOK_EOF
     
@@ -124,17 +127,20 @@ install_global() {
 COMMIT_MSG_FILE=$1
 COMMIT_SOURCE=$2
 
-# Only run for regular commits (not merge, squash, etc.)
-if [ -z "$COMMIT_SOURCE" ] || [ "$COMMIT_SOURCE" = "message" ]; then
-    # Try to find the AI commit suggester
-    if [ -f "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" ]; then
-        # Run the hook version (writes to commit message file)
-        node "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" "$COMMIT_MSG_FILE" 2>/dev/null
-    else
-        echo "# ⚠️  AI commit suggester not found." >> "$COMMIT_MSG_FILE"
-        echo "# Install with: cd /path/to/Bob-PR-reviewer && ./install-git-hook.sh --setup" >> "$COMMIT_MSG_FILE"
-        echo "#" >> "$COMMIT_MSG_FILE"
-    fi
+# Skip when the user already supplied a message via -m / --message,
+# a template (-t), a squash, or a merge — only run for bare `git commit`.
+if [ -n "$COMMIT_SOURCE" ]; then
+    exit 0
+fi
+
+# Try to find the AI commit suggester
+if [ -f "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" ]; then
+    # Run the hook version (writes to commit message file)
+    node "$HOME/.bob-pr-reviewer/dist/suggest-commit-hook.js" "$COMMIT_MSG_FILE" 2>/dev/null
+else
+    echo "# ⚠️  AI commit suggester not found." >> "$COMMIT_MSG_FILE"
+    echo "# Install with: cd /path/to/Bob-PR-reviewer && ./install-git-hook.sh --setup" >> "$COMMIT_MSG_FILE"
+    echo "#" >> "$COMMIT_MSG_FILE"
 fi
 HOOK_EOF
     
