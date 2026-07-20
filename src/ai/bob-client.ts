@@ -56,6 +56,7 @@ export class BobClient implements AIClient {
     }
 
     const prompt = this.buildReviewPrompt(prData);
+    logger.info(`Prompt size: ${Buffer.byteLength(prompt)} bytes`);
 
     try {
       const response = await fetch(`${this.apiEndpoint}/api/v1/execute`, {
@@ -70,7 +71,13 @@ export class BobClient implements AIClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Bob API error: ${response.status} ${response.statusText}`);
+        // Capture the response body to surface the real error from the Bob server
+        // (e.g. "Argument list too long") rather than just the HTTP status code.
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(
+          `Bob API error: ${response.status} ${response.statusText}` +
+          (errorBody ? ` — ${errorBody.slice(0, 300)}` : '')
+        );
       }
 
       const data = await response.json() as BobExecuteResponse;
@@ -232,13 +239,14 @@ Return ONLY the markdown description.`;
   /**
    * Hard ceiling on the total prompt size sent to Bob.
    *
-   * Bob's backend runs the CLI as a subprocess and passes the prompt as a
-   * command-line argument.  Linux's ARG_MAX is typically ~2 MB, but the OS
-   * also accounts for environment variables, so the real safe budget is lower.
-   * We stay well under it with a 90 KB cap.  The instructions + header consume
-   * ~3 KB; the remainder is shared across all file diffs and content snippets.
+   * Bob's backend spawns `bob --accept-license -p <prompt>` as a subprocess.
+   * The prompt is passed as a single CLI argument, so it counts against the
+   * kernel's ARG_MAX budget.  On a GitHub Actions runner, heavy environment
+   * variables consume ~100–150 KB of that budget, leaving as little as
+   * ~30–50 KB for the prompt argument itself.  We use 28 KB to stay safe
+   * even on runners with unusually large environments.
    */
-  private static readonly MAX_PROMPT_BYTES = 90_000;
+  private static readonly MAX_PROMPT_BYTES = 28_000;
 
   private buildReviewPrompt(prData: PRData): string {
     const isFollowUp = prData.reviewRound > 1;
