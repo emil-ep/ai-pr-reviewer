@@ -1,5 +1,25 @@
 import { Octokit } from '@octokit/rest';
 
+/**
+ * Returns true when an API error is a 401 (bad credentials) or 403 (forbidden),
+ * meaning the token definitively lacks the required scope.
+ * We must NOT swallow these silently — treating a permission error as "no data"
+ * would cause the bot to act as if it's round 1 when it might be round N,
+ * leading to re-posting every comment already on the PR.
+ */
+function isPermissionError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const status = (error as { status?: number }).status;
+    if (status === 401 || status === 403) return true;
+    // Octokit GraphQL wraps errors in error.errors[]
+    const errors = (error as { errors?: Array<{ type?: string }> }).errors;
+    if (Array.isArray(errors)) {
+      return errors.some((e) => e?.type === 'FORBIDDEN' || e?.type === 'INSUFFICIENT_SCOPES');
+    }
+  }
+  return false;
+}
+
 export interface PRMetadata {
   number: number;
   title: string;
@@ -248,7 +268,16 @@ export class GitHubClient {
 
       return comments;
     } catch (error) {
-      // GraphQL may fail if token lacks sufficient scope — fall back gracefully
+      // Re-throw permission errors — if the token cannot read review threads
+      // we must not silently pretend this is round 1 (that would cause the bot
+      // to duplicate all comments from previous rounds).
+      if (isPermissionError(error)) {
+        throw new Error(
+          'GitHub token lacks pull-requests read scope required to fetch review threads. ' +
+          `Original error: ${error}`
+        );
+      }
+      // Other errors (network, transient) — fall back gracefully.
       return [];
     }
   }
@@ -277,6 +306,12 @@ export class GitHubClient {
           body: r.body || '',
         }));
     } catch (error) {
+      if (isPermissionError(error)) {
+        throw new Error(
+          'GitHub token lacks pull-requests read scope required to fetch prior reviews. ' +
+          `Original error: ${error}`
+        );
+      }
       return [];
     }
   }

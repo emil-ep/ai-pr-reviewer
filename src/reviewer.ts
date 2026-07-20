@@ -4,6 +4,31 @@ import { PRContextBuilder } from './github/context-builder.js';
 import { logger } from './utils/logger.js';
 
 /**
+ * Re-fetch the current review count for a PR immediately before submitting,
+ * to detect the case where two workflow runs raced and both calculated the
+ * same reviewRound.  Returns the actual round the bot should record.
+ * Throws if we detect a concurrent submission has already bumped the count.
+ */
+async function verifyRoundNotStale(
+  octokit: GitHubClient,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  expectedRound: number
+): Promise<void> {
+  const currentReviews = await octokit.fetchPreviousBotReviews(owner, repo, prNumber);
+  const currentRound = currentReviews.length + 1;
+  if (currentRound !== expectedRound) {
+    throw new Error(
+      `Concurrent review detected: expected round ${expectedRound} but ` +
+      `GitHub already has ${currentReviews.length} bot review(s) (round ${currentRound}). ` +
+      `This run will abort to avoid duplicate comments. ` +
+      `The other concurrent run has already submitted the review.`
+    );
+  }
+}
+
+/**
  * HTML marker embedded in every bot review body and every inline comment.
  * Used to identify prior bot contributions when fetching review history.
  */
@@ -68,7 +93,13 @@ export class PRReviewer {
         `comments=${review.comments.length}`
       );
 
-      // ── Step 3: Submit review via GitHub Reviews API ──────────────────────
+      // ── Step 3: Verify round is still current, then submit ────────────────
+      // Re-read the round count right before submission to catch the race where
+      // two workflow runs triggered simultaneously (e.g., user pushes a commit
+      // while the bot is still calling the AI) and both calculated the same round.
+      await verifyRoundNotStale(
+        this.githubClient, owner, repo, prNumber, context.reviewRound
+      );
       await this.submitReview(owner, repo, prNumber, context.headSha, review, context.reviewRound);
 
       logger.info('✅ Review submitted successfully');

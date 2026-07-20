@@ -2,6 +2,19 @@ import { Octokit } from '@octokit/rest';
 import { logger } from '../utils/logger.js';
 import type { ExistingThread, PreviousReviewRound } from '../ai/base-client.js';
 
+/** Mirrors the helper in github/client.ts — detects 401/403 scope errors. */
+function isPermissionError(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const status = (error as { status?: number }).status;
+    if (status === 401 || status === 403) return true;
+    const errors = (error as { errors?: Array<{ type?: string }> }).errors;
+    if (Array.isArray(errors)) {
+      return errors.some((e) => e?.type === 'FORBIDDEN' || e?.type === 'INSUFFICIENT_SCOPES');
+    }
+  }
+  return false;
+}
+
 export interface CommitInfo {
   sha: string;
   message: string;
@@ -76,6 +89,24 @@ export class PRContextBuilder {
   }
 
   /**
+   * Validate that owner, repo, and prNumber are safe to use as GraphQL variables.
+   * owner/repo must match GitHub's naming rules. prNumber must be a positive integer.
+   * These values come from the GitHub Actions event payload (trusted source), but
+   * we validate defensively in case the class is ever called from untrusted input.
+   */
+  private validateInputs(owner: string, repo: string, prNumber: number): void {
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(owner)) {
+      throw new Error(`Invalid owner: "${owner}"`);
+    }
+    if (!/^[a-zA-Z0-9_.-]{1,100}$/.test(repo)) {
+      throw new Error(`Invalid repo: "${repo}"`);
+    }
+    if (!Number.isInteger(prNumber) || prNumber < 1 || prNumber > 2_147_483_647) {
+      throw new Error(`Invalid prNumber: ${prNumber}`);
+    }
+  }
+
+  /**
    * Build comprehensive context for a PR
    */
   async buildContext(
@@ -83,6 +114,7 @@ export class PRContextBuilder {
     repo: string,
     prNumber: number
   ): Promise<PRContext> {
+    this.validateInputs(owner, repo, prNumber);
     logger.info('Building comprehensive PR context...');
 
     // Fetch all context in parallel for efficiency
@@ -398,14 +430,19 @@ export class PRContextBuilder {
   }> {
     try {
       // ── 1. Fetch review threads via GraphQL (authoritative resolved state) ──
+      // Limits: GitHub's maximum for first: is 100 per page.
+      // We use 100 threads × 50 comments — sufficient for virtually all PRs.
+      // pageInfo is fetched so we can warn when data is silently truncated.
       const query = `
         query($owner: String!, $repo: String!, $prNumber: Int!) {
           repository(owner: $owner, name: $repo) {
             pullRequest(number: $prNumber) {
               reviewThreads(first: 100) {
+                pageInfo { hasNextPage }
                 nodes {
                   isResolved
-                  comments(first: 10) {
+                  comments(first: 50) {
+                    pageInfo { hasNextPage }
                     nodes {
                       databaseId
                       path
@@ -424,9 +461,11 @@ export class PRContextBuilder {
         repository: {
           pullRequest: {
             reviewThreads: {
+              pageInfo: { hasNextPage: boolean };
               nodes: Array<{
                 isResolved: boolean;
                 comments: {
+                  pageInfo: { hasNextPage: boolean };
                   nodes: Array<{
                     databaseId: number;
                     path: string;
@@ -440,12 +479,24 @@ export class PRContextBuilder {
         };
       }>(query, { owner, repo, prNumber });
 
+      const { reviewThreads } = gqlResult.repository.pullRequest;
+
+      if (reviewThreads.pageInfo.hasNextPage) {
+        logger.warn(
+          'PR has >100 review threads — only the first 100 are considered. ' +
+          'Review round tracking may be incomplete.'
+        );
+      }
+
       const openThreads: ExistingThread[] = [];
       const resolvedThreads: ExistingThread[] = [];
 
-      for (const thread of gqlResult.repository.pullRequest.reviewThreads.nodes) {
+      for (const thread of reviewThreads.nodes) {
+        if (thread.comments.pageInfo.hasNextPage) {
+          logger.warn(`A review thread has >50 comments — only the first 50 are read.`);
+        }
         // Only track threads that were created by the bot
-        const botComments = thread.comments.nodes.filter((c) =>
+        const botComments = thread.comments.nodes.filter((c: { body: string }) =>
           c.body.includes('<!-- bob-pr-review -->')
         );
         if (botComments.length === 0) continue;
@@ -485,6 +536,15 @@ export class PRContextBuilder {
         previousReviews,
       };
     } catch (error) {
+      // Re-throw permission errors — silently treating a 403 as "first review"
+      // is dangerous: it would cause the bot to re-post all prior comments.
+      if (isPermissionError(error)) {
+        throw new Error(
+          'GitHub token lacks pull-requests read scope required to fetch review history. ' +
+          `Original error: ${error}`
+        );
+      }
+      // Transient errors — degrade gracefully to round 1.
       logger.warn('Failed to fetch review history, treating as first review:', error);
       return {
         round: 1,

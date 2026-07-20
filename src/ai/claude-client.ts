@@ -1,5 +1,13 @@
 import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
-
+import {
+  sanitizeTitle,
+  sanitizeDescription,
+  sanitizeCommitMessage,
+  sanitizeIssueBody,
+  sanitizeThreadBody,
+  sanitizeSummary,
+  sanitizeIdentifier,
+} from '../utils/prompt-sanitizer.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.js';
 
@@ -216,19 +224,25 @@ Return ONLY the markdown description.`;
   }
 
   private buildInitialPromptHeader(prData: PRData): string {
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
     let h = `You are a senior software engineer performing a thorough, first-pass code review.
 Your goal is to produce a definitive, comprehensive review — as if this is a high-stakes production PR.
 Be direct, specific, and prioritise correctness, security, and maintainability above all.
 
-# Pull Request: ${prData.title}
+# Pull Request: ${title}
 
 ## Metadata
-- **Author:** ${prData.author}
-- **Branch:** \`${prData.headBranch}\` → \`${prData.baseBranch}\`
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
 - **Stats:** ${prData.stats?.totalFiles ?? 0} files, +${prData.stats?.totalAdditions ?? 0}/-${prData.stats?.totalDeletions ?? 0} lines
 
 ## PR Description
-${prData.description || '_No description provided._'}
+${desc}
 
 `;
 
@@ -236,7 +250,7 @@ ${prData.description || '_No description provided._'}
       h += `## Commit History (${prData.commits.length} commits)\n`;
       h += `These commits explain the intent — use them to judge whether the implementation matches the stated goal.\n\n`;
       for (const c of prData.commits.slice(0, 15)) {
-        h += `- \`${c.sha.slice(0, 7)}\` **${c.author}**: ${c.message}\n`;
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
       }
       h += '\n';
     }
@@ -244,10 +258,10 @@ ${prData.description || '_No description provided._'}
     if (prData.linkedIssues && prData.linkedIssues.length > 0) {
       h += `## Linked Issues\n`;
       for (const issue of prData.linkedIssues) {
-        h += `### #${issue.number} — ${issue.title} [${issue.state}]\n`;
+        h += `### #${issue.number} — ${sanitizeTitle(issue.title)} [${issue.state}]\n`;
         h += `Labels: ${issue.labels.join(', ') || 'none'}\n`;
         if (issue.body) {
-          h += `${issue.body.slice(0, 300)}${issue.body.length > 300 ? '…' : ''}\n`;
+          h += `${sanitizeIssueBody(issue.body)}\n`;
         }
         h += '\n';
       }
@@ -272,6 +286,12 @@ ${prData.description || '_No description provided._'}
   }
 
   private buildFollowUpPromptHeader(prData: PRData): string {
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
     let h = `You are a senior software engineer performing a **follow-up code review** (round ${prData.reviewRound}).
 The developer has pushed new changes and may have addressed feedback from previous rounds.
 
@@ -281,15 +301,15 @@ IMPORTANT RULES FOR THIS FOLLOW-UP REVIEW:
 3. Only raise NEW issues introduced by the latest commits, or issues from open threads that remain unfixed.
 4. If everything looks good after the developer's updates, say so clearly and set verdict to APPROVE.
 
-# Pull Request: ${prData.title}
+# Pull Request: ${title}
 
 ## Metadata
-- **Author:** ${prData.author}
-- **Branch:** \`${prData.headBranch}\` → \`${prData.baseBranch}\`
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
 - **Review Round:** ${prData.reviewRound}
 
 ## PR Description
-${prData.description || '_No description provided._'}
+${desc}
 
 `;
 
@@ -297,7 +317,7 @@ ${prData.description || '_No description provided._'}
       h += `## Previous Review Rounds\n`;
       for (const prev of prData.previousReviews) {
         h += `### Round ${prev.round} — ${prev.verdict} (${prev.submittedAt.slice(0, 10)})\n`;
-        h += `${prev.summary}\n\n`;
+        h += `${sanitizeSummary(prev.summary)}\n\n`;
       }
     }
 
@@ -305,7 +325,7 @@ ${prData.description || '_No description provided._'}
       h += `## ✅ Resolved Threads (developer has addressed these — DO NOT re-raise)\n`;
       for (const t of prData.resolvedThreads) {
         const loc = t.line ? `${t.path}:${t.line}` : t.path;
-        h += `- **${loc}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 150)}\n`;
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
       }
       h += '\n';
     }
@@ -314,7 +334,7 @@ ${prData.description || '_No description provided._'}
       h += `## ⚠️ Still-Open Threads (not yet resolved by developer)\n`;
       for (const t of prData.openThreads) {
         const loc = t.line ? `${t.path}:${t.line}` : t.path;
-        h += `- **${loc}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 150)}\n`;
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
       }
       h += '\n';
     }
@@ -322,7 +342,7 @@ ${prData.description || '_No description provided._'}
     if (prData.commits && prData.commits.length > 0) {
       h += `## Latest Commits\n`;
       for (const c of prData.commits.slice(0, 10)) {
-        h += `- \`${c.sha.slice(0, 7)}\` **${c.author}**: ${c.message}\n`;
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
       }
       h += '\n';
     }
