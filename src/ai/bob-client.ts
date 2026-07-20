@@ -1,5 +1,13 @@
-import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
-
+import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult, inferVerdict } from './base-client.js';
+import {
+  sanitizeTitle,
+  sanitizeDescription,
+  sanitizeCommitMessage,
+  sanitizeIssueBody,
+  sanitizeThreadBody,
+  sanitizeSummary,
+  sanitizeIdentifier,
+} from '../utils/prompt-sanitizer.js';
 import { logger } from '../utils/logger.js';
 
 interface BobHealthResponse {
@@ -48,6 +56,7 @@ export class BobClient implements AIClient {
     }
 
     const prompt = this.buildReviewPrompt(prData);
+    logger.info(`Prompt size: ${Buffer.byteLength(prompt)} bytes`);
 
     try {
       const response = await fetch(`${this.apiEndpoint}/api/v1/execute`, {
@@ -62,7 +71,13 @@ export class BobClient implements AIClient {
       });
 
       if (!response.ok) {
-        throw new Error(`Bob API error: ${response.status} ${response.statusText}`);
+        // Capture the response body to surface the real error from the Bob server
+        // (e.g. "Argument list too long") rather than just the HTTP status code.
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(
+          `Bob API error: ${response.status} ${response.statusText}` +
+          (errorBody ? ` — ${errorBody.slice(0, 300)}` : '')
+        );
       }
 
       const data = await response.json() as BobExecuteResponse;
@@ -221,65 +236,252 @@ Return ONLY the markdown description.`;
     return header + content.trim() + footer;
   }
 
+  /**
+   * Hard ceiling on the total prompt size sent to Bob.
+   *
+   * Bob's backend spawns `bob --accept-license -p <prompt>` as a subprocess.
+   * The prompt is passed as a single CLI argument, so it counts against the
+   * kernel's ARG_MAX budget.  On a GitHub Actions runner, heavy environment
+   * variables consume ~100–150 KB of that budget, leaving as little as
+   * ~30–50 KB for the prompt argument itself.  We use 28 KB to stay safe
+   * even on runners with unusually large environments.
+   */
+  private static readonly MAX_PROMPT_BYTES = 28_000;
+
   private buildReviewPrompt(prData: PRData): string {
-    let prompt = `You are an expert code reviewer. Please review this Pull Request and provide detailed feedback.
+    const isFollowUp = prData.reviewRound > 1;
 
-# Pull Request Review
+    let prompt = isFollowUp
+      ? this.buildFollowUpPromptHeader(prData)
+      : this.buildInitialPromptHeader(prData);
 
-## PR Title
-${prData.title}
+    const instructions = this.buildReviewInstructions(isFollowUp);
+
+    // Reserve space for the instructions section so we never cut it.
+    const budget = BobClient.MAX_PROMPT_BYTES - Buffer.byteLength(prompt) - Buffer.byteLength(instructions);
+
+    // ── Changed files (budget-aware) ───────────────────────────────────────
+    let filesSection = `## Changed Files (${prData.files.length})\n\n`;
+    let remaining = budget - Buffer.byteLength(filesSection);
+
+    for (const file of prData.files) {
+      if (remaining <= 0) {
+        filesSection += `_[${prData.files.length} files total — remaining files omitted to stay within size limit]_\n`;
+        break;
+      }
+
+      let block = `### File: ${file.filename}`;
+      if (file.status) block += ` (${file.status})`;
+      block += '\n\n';
+
+      if (file.patch) {
+        // Per-patch cap: at most 40 KB, but also bounded by remaining budget.
+        const patchCap = Math.min(40_000, remaining - 100);
+        const patch = patchCap > 0 ? file.patch.slice(0, patchCap) : '';
+        const truncated = patch.length < file.patch.length;
+        block += `**Diff:**\n\`\`\`diff\n${patch}${truncated ? '\n… [truncated]' : ''}\n\`\`\`\n\n`;
+      }
+
+      if (file.content && remaining - Buffer.byteLength(block) > 500) {
+        // Per-content cap: at most 3 KB (we have the diff already; full content
+        // is supplementary and the most expensive thing size-wise).
+        const contentCap = Math.min(3_000, remaining - Buffer.byteLength(block) - 100);
+        if (contentCap > 0) {
+          const snippet = file.content.slice(0, contentCap);
+          const truncated = snippet.length < file.content.length;
+          block += `**Full content:**\n\`\`\`\n${snippet}${truncated ? '\n… [truncated]' : ''}\n\`\`\`\n\n`;
+        }
+      }
+
+      remaining -= Buffer.byteLength(block);
+      filesSection += block;
+    }
+
+    prompt += filesSection;
+    prompt += instructions;
+    return prompt;
+  }
+
+  private buildInitialPromptHeader(prData: PRData): string {
+    // Sanitize all user-controlled fields before interpolation to prevent
+    // prompt injection via PR descriptions, commit messages, issue bodies, etc.
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
+    let h = `You are a senior software engineer performing a thorough, first-pass code review.
+Your goal is to produce a definitive, comprehensive review — as if this is a high-stakes production PR.
+Be direct, specific, and prioritise correctness, security, and maintainability above all.
+
+# Pull Request: ${title}
+
+## Metadata
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
+- **Stats:** ${prData.stats?.totalFiles ?? 0} files, +${prData.stats?.totalAdditions ?? 0}/-${prData.stats?.totalDeletions ?? 0} lines
 
 ## PR Description
-${prData.description || 'No description provided'}
-
-## Changed Files
+${desc}
 
 `;
 
-    for (const file of prData.files) {
-      prompt += `### File: ${file.filename}\n\n`;
-
-      if (file.patch) {
-        prompt += `**Changes (diff):**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Commit History (${prData.commits.length} commits)\n`;
+      h += `These commits explain the intent of the changes — use them to judge whether the implementation matches the stated goal.\n\n`;
+      for (const c of prData.commits.slice(0, 15)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
       }
+      h += '\n';
+    }
 
-      if (file.content) {
-        prompt += `**Full content:**\n\`\`\`\n${file.content.slice(0, 5000)}\n\`\`\`\n\n`;
+    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
+      h += `## Linked Issues\n`;
+      for (const issue of prData.linkedIssues) {
+        h += `### #${issue.number} — ${sanitizeTitle(issue.title)} [${issue.state}]\n`;
+        h += `Labels: ${issue.labels.join(', ') || 'none'}\n`;
+        if (issue.body) {
+          h += `${sanitizeIssueBody(issue.body)}\n`;
+        }
+        h += '\n';
       }
     }
 
-    prompt += `
-Please analyze these changes and provide your review in the following JSON format:
+    if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
+      h += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
+    }
+
+    if (prData.relatedFiles && prData.relatedFiles.length > 0) {
+      h += `## Related Files (context — not changed)\n`;
+      for (const rf of prData.relatedFiles) {
+        h += `### ${rf.path}\n_Reason: ${rf.reason}_\n`;
+        if (rf.content) {
+          h += `\`\`\`\n${rf.content.slice(0, 2000)}\n\`\`\`\n`;
+        }
+        h += '\n';
+      }
+    }
+
+    return h;
+  }
+
+  private buildFollowUpPromptHeader(prData: PRData): string {
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
+    let h = `You are a senior software engineer performing a **follow-up code review** (round ${prData.reviewRound}).
+The developer has pushed new changes and may have addressed feedback from previous rounds.
+
+IMPORTANT RULES FOR THIS FOLLOW-UP REVIEW:
+1. Do NOT re-raise issues that are already in the "Resolved threads" list below.
+2. Do NOT re-raise issues that are already in the "Still-open threads" list unless the new changes made them WORSE.
+3. Only raise NEW issues introduced by the latest commits, or issues from open threads that remain unfixed.
+4. If everything looks good after the developer's updates, say so clearly and set verdict to APPROVE.
+
+# Pull Request: ${title}
+
+## Metadata
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
+- **Review Round:** ${prData.reviewRound}
+
+## PR Description
+${desc}
+
+`;
+
+    if (prData.previousReviews.length > 0) {
+      h += `## Previous Review Rounds\n`;
+      for (const prev of prData.previousReviews) {
+        // prev.summary is bot-generated, but sanitize it anyway (defence-in-depth)
+        h += `### Round ${prev.round} — ${prev.verdict} (${prev.submittedAt.slice(0, 10)})\n`;
+        h += `${sanitizeSummary(prev.summary)}\n\n`;
+      }
+    }
+
+    if (prData.resolvedThreads.length > 0) {
+      h += `## ✅ Resolved Threads (developer has addressed these — DO NOT re-raise)\n`;
+      for (const t of prData.resolvedThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        // sanitizeThreadBody strips HTML comments AND injection phrases BEFORE interpolation
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.openThreads.length > 0) {
+      h += `## ⚠️ Still-Open Threads (not yet resolved by developer)\n`;
+      for (const t of prData.openThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Latest Commits\n`;
+      for (const c of prData.commits.slice(0, 10)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
+      }
+      h += '\n';
+    }
+
+    return h;
+  }
+
+  private buildReviewInstructions(isFollowUp: boolean): string {
+    const focusAreas = isFollowUp
+      ? `Focus ONLY on:
+1. NEW security vulnerabilities introduced since the last review
+2. NEW logic errors or bugs not present in previous rounds
+3. Open threads from prior rounds that remain unfixed or were made worse
+4. Any regressions caused by the developer's fixes`
+      : `Focus on:
+1. Security vulnerabilities (SQL injection, XSS, auth issues, secrets in code)
+2. Logic errors and bugs (edge cases, off-by-one, null dereferences)
+3. Performance issues (N+1 queries, unnecessary allocations, blocking I/O)
+4. Best practices violations (SOLID, DRY, error handling, naming)
+5. Missing error handling and unhappy paths
+6. Code maintainability and readability
+7. Alignment with linked issues — does the implementation actually solve them?
+8. Impact on related/test files — are tests missing or outdated?`;
+
+    return `
+## Review Instructions
+
+${focusAreas}
+
+Respond with ONLY a JSON object in exactly this format (no markdown wrapper):
 
 {
-  "summary": "Brief overview of changes and overall assessment",
+  "summary": "Concise assessment. For follow-ups, note what was fixed and what still needs attention.",
+  "verdict": "APPROVE | REQUEST_CHANGES | COMMENT",
   "comments": [
     {
-      "path": "file/path.ts",
+      "path": "src/example.ts",
       "line": 42,
-      "severity": "critical",
-      "message": "Detailed explanation of the issue and how to fix it"
+      "severity": "critical | warning | suggestion",
+      "message": "<!-- bob-pr-review -->\\nClear explanation of the issue and a concrete fix suggestion."
     }
   ]
 }
 
-Focus on:
-1. Security vulnerabilities (SQL injection, XSS, authentication issues)
-2. Logic errors and bugs
-3. Performance issues
-4. Best practices violations
-5. Missing error handling
-6. Code maintainability
-
-Provide specific, actionable feedback with file paths and line numbers.`;
-
-    return prompt;
+Rules:
+- "verdict" must be "APPROVE" only if there are zero critical/warning issues.
+- "verdict" must be "REQUEST_CHANGES" if there are any critical issues.
+- "verdict" is "COMMENT" for suggestion-only reviews.
+- Every comment "message" MUST start with the HTML comment marker \`<!-- bob-pr-review -->\` (used for deduplication).
+- Be direct. No filler phrases. Each comment must name the exact problem and the exact fix.
+- Line numbers must match the diff exactly.`;
   }
 
   private parseReviewResponse(content: string): ReviewResult {
     try {
-      // Try to extract JSON from the response
-      // Bob might wrap it in markdown code blocks
+      // Bob might wrap the JSON in markdown code blocks
       const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) ||
         content.match(/```\n([\s\S]*?)\n```/) ||
         content.match(/\{[\s\S]*\}/);
@@ -287,27 +489,19 @@ Provide specific, actionable feedback with file paths and line numbers.`;
       if (jsonMatch) {
         const jsonStr = jsonMatch[1] || jsonMatch[0];
         const parsed = JSON.parse(jsonStr);
-
+        const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
         return {
           summary: parsed.summary || 'Review completed',
-          comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+          verdict: inferVerdict(parsed.verdict, comments),
+          comments,
         };
       }
 
-      // If no JSON found, create a simple review from the text
       logger.warn('Could not parse JSON from Bob response, using text as summary');
-      return {
-        summary: content.slice(0, 500),
-        comments: [],
-      };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     } catch (error) {
       logger.warn('Failed to parse Bob response:', error);
-
-      // Fallback: create a simple review
-      return {
-        summary: content.slice(0, 500),
-        comments: [],
-      };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     }
   }
 

@@ -1,5 +1,13 @@
-import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
-
+import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult, inferVerdict } from './base-client.js';
+import {
+  sanitizeTitle,
+  sanitizeDescription,
+  sanitizeCommitMessage,
+  sanitizeIssueBody,
+  sanitizeThreadBody,
+  sanitizeSummary,
+  sanitizeIdentifier,
+} from '../utils/prompt-sanitizer.js';
 import OpenAI from 'openai';
 import { logger } from '../utils/logger.js';
 
@@ -383,130 +391,219 @@ Return ONLY the markdown description, no additional commentary.`;
   }
 
   private buildReviewPrompt(prData: PRData): string {
-    let prompt = `You are an expert code reviewer. Please review this Pull Request with comprehensive context.
+    const isFollowUp = prData.reviewRound > 1;
+    let prompt = isFollowUp
+      ? this.buildFollowUpPromptHeader(prData)
+      : this.buildInitialPromptHeader(prData);
 
-# Pull Request Review
-
-## PR Metadata
-- **Title:** ${prData.title}
-- **Author:** ${prData.author}
-- **Branch:** ${prData.headBranch} → ${prData.baseBranch}
-- **Stats:** ${prData.stats?.totalFiles || 0} files, +${prData.stats?.totalAdditions || 0}/-${prData.stats?.totalDeletions || 0} lines
-
-## PR Description
-${prData.description || 'No description provided'}
-
-`;
-
-    // Add commit history context
-    if (prData.commits && prData.commits.length > 0) {
-      prompt += `## Commit History (${prData.commits.length} commits)\n`;
-      prompt += 'Understanding the "what" and "why" behind changes:\n\n';
-      for (const commit of prData.commits.slice(0, 10)) {
-        prompt += `- **${commit.sha.slice(0, 7)}** by ${commit.author}: ${commit.message}\n`;
-      }
-      prompt += '\n';
-    }
-
-    // Add linked issues context
-    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
-      prompt += `## Linked Issues (${prData.linkedIssues.length})\n`;
-      prompt += 'Business context and requirements:\n\n';
-      for (const issue of prData.linkedIssues) {
-        prompt += `### Issue #${issue.number}: ${issue.title}\n`;
-        prompt += `- **State:** ${issue.state}\n`;
-        prompt += `- **Labels:** ${issue.labels.join(', ') || 'none'}\n`;
-        prompt += `- **Description:** ${issue.body.slice(0, 300)}${issue.body.length > 300 ? '...' : ''}\n\n`;
-      }
-    }
-
-    // Add affected dependencies
-    if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
-      prompt += `## Affected Dependencies\n`;
-      prompt += `${prData.affectedDependencies.join(', ')}\n\n`;
-    }
-
-    // Add related files context
-    if (prData.relatedFiles && prData.relatedFiles.length > 0) {
-      prompt += `## Related Files (${prData.relatedFiles.length})\n`;
-      prompt += 'Files that may be impacted by these changes:\n\n';
-      for (const relatedFile of prData.relatedFiles) {
-        prompt += `### ${relatedFile.path}\n`;
-        prompt += `**Reason:** ${relatedFile.reason}\n`;
-        if (relatedFile.content) {
-          prompt += `**Content:**\n\`\`\`\n${relatedFile.content.slice(0, 2000)}\n\`\`\`\n\n`;
-        }
-      }
-    }
-
-    // Add changed files
     prompt += `## Changed Files (${prData.files.length})\n\n`;
     for (const file of prData.files) {
       prompt += `### File: ${file.filename}`;
-      if (file.status) {
-        prompt += ` (${file.status})`;
-      }
+      if (file.status) prompt += ` (${file.status})`;
       prompt += '\n\n';
-
       if (file.patch) {
-        prompt += `**Changes (diff):**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
+        prompt += `**Diff:**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
       }
-
       if (file.content) {
         prompt += `**Full content:**\n\`\`\`\n${file.content.slice(0, 5000)}\n\`\`\`\n\n`;
       }
     }
 
-    prompt += `
+    prompt += this.buildReviewInstructions(isFollowUp);
+    return prompt;
+  }
+
+  private buildInitialPromptHeader(prData: PRData): string {
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
+    let h = `You are a senior software engineer performing a thorough, first-pass code review.
+Your goal is to produce a definitive, comprehensive review — as if this is a high-stakes production PR.
+Be direct, specific, and prioritise correctness, security, and maintainability above all.
+
+# Pull Request: ${title}
+
+## Metadata
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
+- **Stats:** ${prData.stats?.totalFiles ?? 0} files, +${prData.stats?.totalAdditions ?? 0}/-${prData.stats?.totalDeletions ?? 0} lines
+
+## PR Description
+${desc}
+
+`;
+
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Commit History (${prData.commits.length} commits)\n`;
+      h += `These commits explain the intent — use them to judge whether the implementation matches the stated goal.\n\n`;
+      for (const c of prData.commits.slice(0, 15)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
+      h += `## Linked Issues\n`;
+      for (const issue of prData.linkedIssues) {
+        h += `### #${issue.number} — ${sanitizeTitle(issue.title)} [${issue.state}]\n`;
+        h += `Labels: ${issue.labels.join(', ') || 'none'}\n`;
+        if (issue.body) {
+          h += `${sanitizeIssueBody(issue.body)}\n`;
+        }
+        h += '\n';
+      }
+    }
+
+    if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
+      h += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
+    }
+
+    if (prData.relatedFiles && prData.relatedFiles.length > 0) {
+      h += `## Related Files (context — not changed)\n`;
+      for (const rf of prData.relatedFiles) {
+        h += `### ${rf.path}\n_Reason: ${rf.reason}_\n`;
+        if (rf.content) {
+          h += `\`\`\`\n${rf.content.slice(0, 2000)}\n\`\`\`\n`;
+        }
+        h += '\n';
+      }
+    }
+
+    return h;
+  }
+
+  private buildFollowUpPromptHeader(prData: PRData): string {
+    const title  = sanitizeTitle(prData.title);
+    const author = sanitizeIdentifier(prData.author);
+    const head   = sanitizeIdentifier(prData.headBranch);
+    const base   = sanitizeIdentifier(prData.baseBranch);
+    const desc   = sanitizeDescription(prData.description || '_No description provided._');
+
+    let h = `You are a senior software engineer performing a **follow-up code review** (round ${prData.reviewRound}).
+The developer has pushed new changes and may have addressed feedback from previous rounds.
+
+IMPORTANT RULES FOR THIS FOLLOW-UP REVIEW:
+1. Do NOT re-raise issues that are already in the "Resolved threads" list below.
+2. Do NOT re-raise issues that are already in the "Still-open threads" list unless the new changes made them WORSE.
+3. Only raise NEW issues introduced by the latest commits, or issues from open threads that remain unfixed.
+4. If everything looks good after the developer's updates, say so clearly and set verdict to APPROVE.
+
+# Pull Request: ${title}
+
+## Metadata
+- **Author:** ${author}
+- **Branch:** \`${head}\` → \`${base}\`
+- **Review Round:** ${prData.reviewRound}
+
+## PR Description
+${desc}
+
+`;
+
+    if (prData.previousReviews.length > 0) {
+      h += `## Previous Review Rounds\n`;
+      for (const prev of prData.previousReviews) {
+        h += `### Round ${prev.round} — ${prev.verdict} (${prev.submittedAt.slice(0, 10)})\n`;
+        h += `${sanitizeSummary(prev.summary)}\n\n`;
+      }
+    }
+
+    if (prData.resolvedThreads.length > 0) {
+      h += `## ✅ Resolved Threads (developer has addressed these — DO NOT re-raise)\n`;
+      for (const t of prData.resolvedThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.openThreads.length > 0) {
+      h += `## ⚠️ Still-Open Threads (not yet resolved by developer)\n`;
+      for (const t of prData.openThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        h += `- **${loc}**: ${sanitizeThreadBody(t.body)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Latest Commits\n`;
+      for (const c of prData.commits.slice(0, 10)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
+      }
+      h += '\n';
+    }
+
+    return h;
+  }
+
+  private buildReviewInstructions(isFollowUp: boolean): string {
+    const focusAreas = isFollowUp
+      ? `Focus ONLY on:
+1. NEW security vulnerabilities introduced since the last review
+2. NEW logic errors or bugs not present in previous rounds
+3. Open threads from prior rounds that remain unfixed or were made worse
+4. Any regressions caused by the developer's fixes`
+      : `Focus on:
+1. Security vulnerabilities (SQL injection, XSS, auth issues, secrets in code)
+2. Logic errors and bugs (edge cases, off-by-one, null dereferences)
+3. Performance issues (N+1 queries, unnecessary allocations, blocking I/O)
+4. Best practices violations (SOLID, DRY, error handling, naming)
+5. Missing error handling and unhappy paths
+6. Code maintainability and readability
+7. Alignment with linked issues — does the implementation actually solve them?
+8. Impact on related/test files — are tests missing or outdated?`;
+
+    return `
 ## Review Instructions
 
-Please analyze these changes WITH THE FULL CONTEXT PROVIDED and provide your review in JSON format:
+${focusAreas}
+
+Respond with ONLY a JSON object in exactly this format (no markdown wrapper):
 
 {
-  "summary": "Brief overview considering the commits, linked issues, and business context",
+  "summary": "Concise assessment. For follow-ups, note what was fixed and what still needs attention.",
+  "verdict": "APPROVE | REQUEST_CHANGES | COMMENT",
   "comments": [
     {
-      "path": "file/path.ts",
+      "path": "src/example.ts",
       "line": 42,
-      "severity": "critical",
-      "message": "Detailed explanation referencing the context (commits, issues, related files)"
+      "severity": "critical | warning | suggestion",
+      "message": "<!-- bob-pr-review -->\\nClear explanation of the issue and a concrete fix suggestion."
     }
   ]
 }
 
-Focus on:
-1. **Alignment with linked issues** - Do changes address the stated requirements?
-2. **Commit message quality** - Are commits well-structured and meaningful?
-3. **Impact on related files** - Will changes break existing functionality?
-4. **Dependency changes** - Are new dependencies necessary and secure?
-5. **Security vulnerabilities** - SQL injection, XSS, authentication issues
-6. **Logic errors and bugs** - Considering the broader context
-7. **Performance issues** - Especially with dependency changes
-8. **Best practices violations**
-9. **Missing error handling**
-10. **Code maintainability**
-
-Provide specific, actionable feedback that references the context (e.g., "This change addresses issue #123 but...").`;
-
-    return prompt;
+Rules:
+- "verdict" must be "APPROVE" only if there are zero critical/warning issues.
+- "verdict" must be "REQUEST_CHANGES" if there are any critical issues.
+- "verdict" is "COMMENT" for suggestion-only reviews.
+- Every comment "message" MUST start with the HTML comment marker \`<!-- bob-pr-review -->\` (used for deduplication).
+- Be direct. No filler phrases. Each comment must name the exact problem and the exact fix.
+- Line numbers must match the diff exactly.`;
   }
 
   private parseReviewResponse(content: string): ReviewResult {
     try {
-      const parsed = JSON.parse(content);
+      // ChatGPT returns clean JSON but may sometimes wrap in code blocks
+      const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) ||
+        content.match(/```\n([\s\S]*?)\n```/) ||
+        [null, content];
 
+      const jsonStr = jsonMatch[1] || content;
+      const parsed = JSON.parse(jsonStr);
+      const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
       return {
         summary: parsed.summary || 'Review completed',
-        comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+        verdict: inferVerdict(parsed.verdict, comments),
+        comments,
       };
     } catch (error) {
       logger.warn('Failed to parse ChatGPT response:', error);
-
-      // Fallback: create a simple review
-      return {
-        summary: content.slice(0, 500),
-        comments: [],
-      };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     }
   }
 }

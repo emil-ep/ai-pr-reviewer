@@ -8,6 +8,29 @@ export interface ReviewComment {
 export interface ReviewResult {
   summary: string;
   comments: ReviewComment[];
+  /** Verdict the reviewer wants to submit. Defaults to COMMENT when omitted. */
+  verdict?: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+}
+
+/** An existing review thread on the PR — used so the AI can skip already-addressed issues. */
+export interface ExistingThread {
+  /** GraphQL node ID of the thread — used to call resolveReviewThread mutation. */
+  threadNodeId: string;
+  /** REST database ID of the first bot comment in the thread — used to post a reply. */
+  commentId: number;
+  path: string;
+  line: number | null;
+  body: string;
+  /** Whether the developer already resolved/dismissed this thread. */
+  resolved: boolean;
+}
+
+/** High-level record of a previous bot review round. */
+export interface PreviousReviewRound {
+  round: number;
+  submittedAt: string;
+  verdict: string;
+  summary: string;
 }
 
 export interface PRData {
@@ -16,8 +39,18 @@ export interface PRData {
   author: string;
   baseBranch: string;
   headBranch: string;
-  
-  // Enhanced context
+
+  // ── Review-round context ──────────────────────────────────────────────────
+  /** 1 = first review, 2 = second (re-review after developer addressed feedback), etc. */
+  reviewRound: number;
+  /** All open (unresolved) threads from previous bot reviews. */
+  openThreads: ExistingThread[];
+  /** All threads that the developer has already resolved. */
+  resolvedThreads: ExistingThread[];
+  /** Summaries of previous bot review rounds. */
+  previousReviews: PreviousReviewRound[];
+
+  // ── Commit / issue context ────────────────────────────────────────────────
   commits?: Array<{
     sha: string;
     message: string;
@@ -109,4 +142,32 @@ export interface AIClient {
   generatePRDescription?(prData: PRData): Promise<PRDescriptionResult>;
   generateCommitMessage?(diffSummary: GitDiffSummary): Promise<CommitMessageResult>;
   healthCheck?(): Promise<boolean>;
+}
+
+/**
+ * Infer a review verdict from comment severities when the AI omits the
+ * `verdict` field (or returns an unrecognised value).
+ *
+ * Rules (mirrors the prompt instructions given to the AI):
+ *   - Any critical comment  → REQUEST_CHANGES
+ *   - Any warning comment   → COMMENT  (neutral, needs attention)
+ *   - Only suggestions / no comments → APPROVE
+ *
+ * The explicit AI-supplied verdict always wins when it is present and valid,
+ * so this function is only called as a fallback.
+ */
+export function inferVerdict(
+  aiVerdict: string | undefined,
+  comments: Array<{ severity?: string }>
+): ReviewResult['verdict'] {
+  const valid = new Set<string>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT']);
+  if (aiVerdict && valid.has(aiVerdict)) {
+    return aiVerdict as ReviewResult['verdict'];
+  }
+  // AI omitted or returned an unrecognised verdict — derive it from comments.
+  const hasCritical = comments.some((c) => c.severity === 'critical');
+  const hasWarning  = comments.some((c) => c.severity === 'warning');
+  return hasCritical ? 'REQUEST_CHANGES'
+       : hasWarning  ? 'COMMENT'
+       :               'APPROVE';
 }

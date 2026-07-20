@@ -2,13 +2,16 @@ name: AI PR Assistant
 
 on:
   pull_request:
-    types: [opened]
+    # opened      → initial review (round 1)
+    # synchronize → developer pushed new commits; triggers follow-up review
+    # reopened    → treat like a fresh open
+    types: [opened, synchronize, reopened]
   issue_comment:
     types: [created]
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: write   # required for createReview (Reviews API) and GraphQL thread query
   issues: write
 
 jobs:
@@ -16,6 +19,10 @@ jobs:
   generate-description:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    concurrency:
+      # One description-generation run per PR — PR open fires once, but be safe.
+      group: pr-description-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     
     steps:
       - name: Check if PR has description
@@ -210,13 +217,20 @@ jobs:
           DETECTED_PROVIDER: ${{ env.DETECTED_PROVIDER }}
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
 
-  # Job 2: Review PR when user comments /review
+  # Job 2: Review PR automatically on new commits (synchronize/reopened) or on /review comment
   review:
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'issue_comment' && 
-      github.event.issue.pull_request &&
-      contains(github.event.comment.body, '/review')
+      (github.event_name == 'pull_request' &&
+       (github.event.action == 'synchronize' || github.event.action == 'reopened')) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/review'))
+    concurrency:
+      # One review run per PR at a time. On rapid pushes the older run is cancelled
+      # before it reaches the (expensive) AI call, saving API quota.
+      group: pr-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     
     steps:
       - name: Checkout AI PR Reviewer
@@ -240,13 +254,28 @@ jobs:
         working-directory: ai-reviewer
         run: npm run build
       
+      - name: Resolve PR number and repo
+        id: pr
+        run: |
+          # PR_NUMBER: pull_request events expose it at pull_request.number;
+          # issue_comment events expose it at issue.number.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+          # REPO_NAME: github.repository is always "owner/repo" on every event
+          # type — strip the owner prefix to get the bare repo name.
+          echo "repo_name=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+
       - name: Run AI PR Review
         working-directory: ai-reviewer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER:  ${{ steps.pr.outputs.number }}
           REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_NAME:  ${{ steps.pr.outputs.repo_name }}
           
           # AI Provider Configuration
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
