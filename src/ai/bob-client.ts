@@ -229,6 +229,17 @@ Return ONLY the markdown description.`;
     return header + content.trim() + footer;
   }
 
+  /**
+   * Hard ceiling on the total prompt size sent to Bob.
+   *
+   * Bob's backend runs the CLI as a subprocess and passes the prompt as a
+   * command-line argument.  Linux's ARG_MAX is typically ~2 MB, but the OS
+   * also accounts for environment variables, so the real safe budget is lower.
+   * We stay well under it with a 90 KB cap.  The instructions + header consume
+   * ~3 KB; the remainder is shared across all file diffs and content snippets.
+   */
+  private static readonly MAX_PROMPT_BYTES = 90_000;
+
   private buildReviewPrompt(prData: PRData): string {
     const isFollowUp = prData.reviewRound > 1;
 
@@ -236,21 +247,50 @@ Return ONLY the markdown description.`;
       ? this.buildFollowUpPromptHeader(prData)
       : this.buildInitialPromptHeader(prData);
 
-    // ── Changed files ──────────────────────────────────────────────────────
-    prompt += `## Changed Files (${prData.files.length})\n\n`;
+    const instructions = this.buildReviewInstructions(isFollowUp);
+
+    // Reserve space for the instructions section so we never cut it.
+    const budget = BobClient.MAX_PROMPT_BYTES - Buffer.byteLength(prompt) - Buffer.byteLength(instructions);
+
+    // ── Changed files (budget-aware) ───────────────────────────────────────
+    let filesSection = `## Changed Files (${prData.files.length})\n\n`;
+    let remaining = budget - Buffer.byteLength(filesSection);
+
     for (const file of prData.files) {
-      prompt += `### File: ${file.filename}`;
-      if (file.status) prompt += ` (${file.status})`;
-      prompt += '\n\n';
+      if (remaining <= 0) {
+        filesSection += `_[${prData.files.length} files total — remaining files omitted to stay within size limit]_\n`;
+        break;
+      }
+
+      let block = `### File: ${file.filename}`;
+      if (file.status) block += ` (${file.status})`;
+      block += '\n\n';
+
       if (file.patch) {
-        prompt += `**Diff:**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
+        // Per-patch cap: at most 40 KB, but also bounded by remaining budget.
+        const patchCap = Math.min(40_000, remaining - 100);
+        const patch = patchCap > 0 ? file.patch.slice(0, patchCap) : '';
+        const truncated = patch.length < file.patch.length;
+        block += `**Diff:**\n\`\`\`diff\n${patch}${truncated ? '\n… [truncated]' : ''}\n\`\`\`\n\n`;
       }
-      if (file.content) {
-        prompt += `**Full content:**\n\`\`\`\n${file.content.slice(0, 5000)}\n\`\`\`\n\n`;
+
+      if (file.content && remaining - Buffer.byteLength(block) > 500) {
+        // Per-content cap: at most 3 KB (we have the diff already; full content
+        // is supplementary and the most expensive thing size-wise).
+        const contentCap = Math.min(3_000, remaining - Buffer.byteLength(block) - 100);
+        if (contentCap > 0) {
+          const snippet = file.content.slice(0, contentCap);
+          const truncated = snippet.length < file.content.length;
+          block += `**Full content:**\n\`\`\`\n${snippet}${truncated ? '\n… [truncated]' : ''}\n\`\`\`\n\n`;
+        }
       }
+
+      remaining -= Buffer.byteLength(block);
+      filesSection += block;
     }
 
-    prompt += this.buildReviewInstructions(isFollowUp);
+    prompt += filesSection;
+    prompt += instructions;
     return prompt;
   }
 
