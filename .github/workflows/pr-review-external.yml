@@ -2,10 +2,8 @@ name: AI PR Assistant
 
 on:
   pull_request:
-    # opened      → initial review (round 1)
-    # synchronize → developer pushed new commits; triggers follow-up review
-    # reopened    → treat like a fresh open
-    types: [opened, synchronize, reopened]
+    # opened → description generation only (no auto-review)
+    types: [opened]
   issue_comment:
     types: [created]
 
@@ -217,19 +215,15 @@ jobs:
           DETECTED_PROVIDER: ${{ env.DETECTED_PROVIDER }}
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
 
-  # Job 2: Review PR automatically on new commits (synchronize/reopened) or on /review comment
+  # Job 2: Review PR on /review comment only
   review:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'pull_request' &&
-       (github.event.action == 'synchronize' || github.event.action == 'reopened')) ||
-      (github.event_name == 'issue_comment' &&
-       github.event.issue.pull_request &&
-       contains(github.event.comment.body, '/review'))
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '/review')
     concurrency:
-      # One review run per PR at a time. On rapid pushes the older run is cancelled
-      # before it reaches the (expensive) AI call, saving API quota.
-      group: pr-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      group: pr-review-${{ github.event.issue.number }}
       cancel-in-progress: true
     
     steps:
