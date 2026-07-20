@@ -30,6 +30,11 @@ export class PRDescriptionGenerator {
       author: context.author,
       baseBranch: context.baseBranch,
       headBranch: context.headBranch,
+      // Review-round fields are not used for description generation
+      reviewRound: 1,
+      openThreads: [],
+      resolvedThreads: [],
+      previousReviews: [],
       commits: context.commits,
       linkedIssues: context.linkedIssues,
       relatedFiles: context.relatedFiles,

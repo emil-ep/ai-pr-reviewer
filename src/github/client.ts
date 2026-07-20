@@ -29,6 +29,26 @@ export interface PRDiff {
   };
 }
 
+/** A single existing review thread on a PR (inline comment or general comment). */
+export interface ExistingReviewComment {
+  id: number;
+  path: string;
+  line: number | null;
+  body: string;
+  /** true when the thread has been resolved (dismissed/resolved in the UI). */
+  resolved: boolean;
+  /** The bot comment marker so we can identify our own prior comments. */
+  isBotComment: boolean;
+}
+
+/** Summary of a previous bot review round. */
+export interface PreviousBotReview {
+  id: number;
+  submittedAt: string;
+  state: string; // APPROVED | CHANGES_REQUESTED | COMMENTED
+  body: string;
+}
+
 export class GitHubClient {
   private octokit: Octokit;
 
@@ -149,6 +169,154 @@ export class GitHubClient {
       }
     } catch (error) {
       throw new Error(`Failed to post review comment: ${error}`);
+    }
+  }
+
+  /**
+   * Fetch all existing inline review comments on a PR.
+   * GitHub does not expose a "resolved" flag on review comments directly via REST,
+   * but we can approximate by checking if the thread has a reply that acknowledges
+   * it or if the comment body contains a resolved marker we write.
+   * We use the GraphQL API for the authoritative resolved state.
+   */
+  async fetchExistingReviewComments(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<ExistingReviewComment[]> {
+    try {
+      // Use GraphQL to get threads with resolved state
+      const query = `
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviewThreads(first: 100) {
+                nodes {
+                  isResolved
+                  comments(first: 10) {
+                    nodes {
+                      databaseId
+                      path
+                      line
+                      body
+                      author { login }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const result = await this.octokit.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                isResolved: boolean;
+                comments: {
+                  nodes: Array<{
+                    databaseId: number;
+                    path: string;
+                    line: number | null;
+                    body: string;
+                    author: { login: string };
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      }>(query, { owner, repo, prNumber });
+
+      const comments: ExistingReviewComment[] = [];
+      const threads = result.repository.pullRequest.reviewThreads.nodes;
+
+      for (const thread of threads) {
+        for (const c of thread.comments.nodes) {
+          comments.push({
+            id: c.databaseId,
+            path: c.path,
+            line: c.line,
+            body: c.body,
+            resolved: thread.isResolved,
+            isBotComment: c.body.includes('<!-- bob-pr-review -->'),
+          });
+        }
+      }
+
+      return comments;
+    } catch (error) {
+      // GraphQL may fail if token lacks sufficient scope — fall back gracefully
+      return [];
+    }
+  }
+
+  /**
+   * Fetch previous bot review submissions on a PR (Reviews API, not comments).
+   */
+  async fetchPreviousBotReviews(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<PreviousBotReview[]> {
+    try {
+      const { data: reviews } = await this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+
+      return reviews
+        .filter((r) => r.body?.includes('<!-- bob-pr-review -->'))
+        .map((r) => ({
+          id: r.id,
+          submittedAt: r.submitted_at || '',
+          state: r.state,
+          body: r.body || '',
+        }));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  /**
+   * Submit a full GitHub review (atomic — all inline comments + verdict in one API call).
+   * This is the correct way to post a code review; it appears as a single review event
+   * in the PR timeline and allows REQUEST_CHANGES / APPROVE verdicts.
+   */
+  async submitReview(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commitId: string,
+    event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT',
+    body: string,
+    comments: Array<{
+      path: string;
+      line: number;
+      side?: 'LEFT' | 'RIGHT';
+      body: string;
+    }>
+  ): Promise<void> {
+    try {
+      await this.octokit.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        commit_id: commitId,
+        event,
+        body,
+        comments: comments.map((c) => ({
+          path: c.path,
+          line: c.line,
+          side: c.side ?? 'RIGHT',
+          body: c.body,
+        })),
+      });
+    } catch (error) {
+      throw new Error(`Failed to submit review: ${error}`);
     }
   }
 

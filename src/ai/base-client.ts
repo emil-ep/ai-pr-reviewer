@@ -8,6 +8,25 @@ export interface ReviewComment {
 export interface ReviewResult {
   summary: string;
   comments: ReviewComment[];
+  /** Verdict the reviewer wants to submit. Defaults to COMMENT when omitted. */
+  verdict?: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
+}
+
+/** An existing review thread on the PR — used so the AI can skip already-addressed issues. */
+export interface ExistingThread {
+  path: string;
+  line: number | null;
+  body: string;
+  /** Whether the developer already resolved/dismissed this thread. */
+  resolved: boolean;
+}
+
+/** High-level record of a previous bot review round. */
+export interface PreviousReviewRound {
+  round: number;
+  submittedAt: string;
+  verdict: string;
+  summary: string;
 }
 
 export interface PRData {
@@ -16,8 +35,18 @@ export interface PRData {
   author: string;
   baseBranch: string;
   headBranch: string;
-  
-  // Enhanced context
+
+  // ── Review-round context ──────────────────────────────────────────────────
+  /** 1 = first review, 2 = second (re-review after developer addressed feedback), etc. */
+  reviewRound: number;
+  /** All open (unresolved) threads from previous bot reviews. */
+  openThreads: ExistingThread[];
+  /** All threads that the developer has already resolved. */
+  resolvedThreads: ExistingThread[];
+  /** Summaries of previous bot review rounds. */
+  previousReviews: PreviousReviewRound[];
+
+  // ── Commit / issue context ────────────────────────────────────────────────
   commits?: Array<{
     sha: string;
     message: string;

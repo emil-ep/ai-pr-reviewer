@@ -193,64 +193,192 @@ Return ONLY the markdown description.`;
   }
 
   private buildReviewPrompt(prData: PRData): string {
-    let prompt = `You are an expert code reviewer. Please review this Pull Request and provide detailed feedback.
+    const isFollowUp = prData.reviewRound > 1;
+    let prompt = isFollowUp
+      ? this.buildFollowUpPromptHeader(prData)
+      : this.buildInitialPromptHeader(prData);
 
-# Pull Request Review
-
-## PR Title
-${prData.title}
-
-## PR Description
-${prData.description || 'No description provided'}
-
-## Changed Files
-
-`;
-
+    prompt += `## Changed Files (${prData.files.length})\n\n`;
     for (const file of prData.files) {
-      prompt += `### File: ${file.filename}\n\n`;
-
+      prompt += `### File: ${file.filename}`;
+      if (file.status) prompt += ` (${file.status})`;
+      prompt += '\n\n';
       if (file.patch) {
-        prompt += `**Changes (diff):**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
+        prompt += `**Diff:**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
       }
-
       if (file.content) {
         prompt += `**Full content:**\n\`\`\`\n${file.content.slice(0, 5000)}\n\`\`\`\n\n`;
       }
     }
 
-    prompt += `
-Please analyze these changes and provide your review in the following JSON format:
+    prompt += this.buildReviewInstructions(isFollowUp);
+    return prompt;
+  }
+
+  private buildInitialPromptHeader(prData: PRData): string {
+    let h = `You are a senior software engineer performing a thorough, first-pass code review.
+Your goal is to produce a definitive, comprehensive review — as if this is a high-stakes production PR.
+Be direct, specific, and prioritise correctness, security, and maintainability above all.
+
+# Pull Request: ${prData.title}
+
+## Metadata
+- **Author:** ${prData.author}
+- **Branch:** \`${prData.headBranch}\` → \`${prData.baseBranch}\`
+- **Stats:** ${prData.stats?.totalFiles ?? 0} files, +${prData.stats?.totalAdditions ?? 0}/-${prData.stats?.totalDeletions ?? 0} lines
+
+## PR Description
+${prData.description || '_No description provided._'}
+
+`;
+
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Commit History (${prData.commits.length} commits)\n`;
+      h += `These commits explain the intent — use them to judge whether the implementation matches the stated goal.\n\n`;
+      for (const c of prData.commits.slice(0, 15)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${c.author}**: ${c.message}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
+      h += `## Linked Issues\n`;
+      for (const issue of prData.linkedIssues) {
+        h += `### #${issue.number} — ${issue.title} [${issue.state}]\n`;
+        h += `Labels: ${issue.labels.join(', ') || 'none'}\n`;
+        if (issue.body) {
+          h += `${issue.body.slice(0, 300)}${issue.body.length > 300 ? '…' : ''}\n`;
+        }
+        h += '\n';
+      }
+    }
+
+    if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
+      h += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
+    }
+
+    if (prData.relatedFiles && prData.relatedFiles.length > 0) {
+      h += `## Related Files (context — not changed)\n`;
+      for (const rf of prData.relatedFiles) {
+        h += `### ${rf.path}\n_Reason: ${rf.reason}_\n`;
+        if (rf.content) {
+          h += `\`\`\`\n${rf.content.slice(0, 2000)}\n\`\`\`\n`;
+        }
+        h += '\n';
+      }
+    }
+
+    return h;
+  }
+
+  private buildFollowUpPromptHeader(prData: PRData): string {
+    let h = `You are a senior software engineer performing a **follow-up code review** (round ${prData.reviewRound}).
+The developer has pushed new changes and may have addressed feedback from previous rounds.
+
+IMPORTANT RULES FOR THIS FOLLOW-UP REVIEW:
+1. Do NOT re-raise issues that are already in the "Resolved threads" list below.
+2. Do NOT re-raise issues that are already in the "Still-open threads" list unless the new changes made them WORSE.
+3. Only raise NEW issues introduced by the latest commits, or issues from open threads that remain unfixed.
+4. If everything looks good after the developer's updates, say so clearly and set verdict to APPROVE.
+
+# Pull Request: ${prData.title}
+
+## Metadata
+- **Author:** ${prData.author}
+- **Branch:** \`${prData.headBranch}\` → \`${prData.baseBranch}\`
+- **Review Round:** ${prData.reviewRound}
+
+## PR Description
+${prData.description || '_No description provided._'}
+
+`;
+
+    if (prData.previousReviews.length > 0) {
+      h += `## Previous Review Rounds\n`;
+      for (const prev of prData.previousReviews) {
+        h += `### Round ${prev.round} — ${prev.verdict} (${prev.submittedAt.slice(0, 10)})\n`;
+        h += `${prev.summary}\n\n`;
+      }
+    }
+
+    if (prData.resolvedThreads.length > 0) {
+      h += `## ✅ Resolved Threads (developer has addressed these — DO NOT re-raise)\n`;
+      for (const t of prData.resolvedThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        h += `- **${loc}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 150)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.openThreads.length > 0) {
+      h += `## ⚠️ Still-Open Threads (not yet resolved by developer)\n`;
+      for (const t of prData.openThreads) {
+        const loc = t.line ? `${t.path}:${t.line}` : t.path;
+        h += `- **${loc}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 150)}\n`;
+      }
+      h += '\n';
+    }
+
+    if (prData.commits && prData.commits.length > 0) {
+      h += `## Latest Commits\n`;
+      for (const c of prData.commits.slice(0, 10)) {
+        h += `- \`${c.sha.slice(0, 7)}\` **${c.author}**: ${c.message}\n`;
+      }
+      h += '\n';
+    }
+
+    return h;
+  }
+
+  private buildReviewInstructions(isFollowUp: boolean): string {
+    const focusAreas = isFollowUp
+      ? `Focus ONLY on:
+1. NEW security vulnerabilities introduced since the last review
+2. NEW logic errors or bugs not present in previous rounds
+3. Open threads from prior rounds that remain unfixed or were made worse
+4. Any regressions caused by the developer's fixes`
+      : `Focus on:
+1. Security vulnerabilities (SQL injection, XSS, auth issues, secrets in code)
+2. Logic errors and bugs (edge cases, off-by-one, null dereferences)
+3. Performance issues (N+1 queries, unnecessary allocations, blocking I/O)
+4. Best practices violations (SOLID, DRY, error handling, naming)
+5. Missing error handling and unhappy paths
+6. Code maintainability and readability
+7. Alignment with linked issues — does the implementation actually solve them?
+8. Impact on related/test files — are tests missing or outdated?`;
+
+    return `
+## Review Instructions
+
+${focusAreas}
+
+Respond with ONLY a JSON object in exactly this format (no markdown wrapper):
 
 {
-  "summary": "Brief overview of changes and overall assessment",
+  "summary": "Concise assessment. For follow-ups, note what was fixed and what still needs attention.",
+  "verdict": "APPROVE | REQUEST_CHANGES | COMMENT",
   "comments": [
     {
-      "path": "file/path.ts",
+      "path": "src/example.ts",
       "line": 42,
-      "severity": "critical",
-      "message": "Detailed explanation of the issue and how to fix it"
+      "severity": "critical | warning | suggestion",
+      "message": "<!-- bob-pr-review -->\\nClear explanation of the issue and a concrete fix suggestion."
     }
   ]
 }
 
-Focus on:
-1. Security vulnerabilities (SQL injection, XSS, authentication issues)
-2. Logic errors and bugs
-3. Performance issues
-4. Best practices violations
-5. Missing error handling
-6. Code maintainability
-
-Provide specific, actionable feedback with file paths and line numbers. Return ONLY the JSON object, no additional text.`;
-
-    return prompt;
+Rules:
+- "verdict" must be "APPROVE" only if there are zero critical/warning issues.
+- "verdict" must be "REQUEST_CHANGES" if there are any critical issues.
+- "verdict" is "COMMENT" for suggestion-only reviews.
+- Every comment "message" MUST start with the HTML comment marker \`<!-- bob-pr-review -->\` (used for deduplication).
+- Be direct. No filler phrases. Each comment must name the exact problem and the exact fix.
+- Line numbers must match the diff exactly.`;
   }
 
   private parseReviewResponse(content: string): ReviewResult {
     try {
-      // Try to extract JSON from the response
-      // Claude might wrap it in markdown code blocks
+      // Claude might wrap JSON in markdown code blocks
       const jsonMatch = content.match(/```json\n([\s\S]*?)\n```/) ||
         content.match(/```\n([\s\S]*?)\n```/) ||
         content.match(/\{[\s\S]*\}/);
@@ -258,27 +386,18 @@ Provide specific, actionable feedback with file paths and line numbers. Return O
       if (jsonMatch) {
         const jsonStr = jsonMatch[1] || jsonMatch[0];
         const parsed = JSON.parse(jsonStr);
-
         return {
           summary: parsed.summary || 'Review completed',
+          verdict: parsed.verdict ?? 'COMMENT',
           comments: Array.isArray(parsed.comments) ? parsed.comments : [],
         };
       }
 
-      // If no JSON found, create a simple review from the text
       logger.warn('Could not parse JSON from Claude response, using text as summary');
-      return {
-        summary: content.slice(0, 500),
-        comments: [],
-      };
+      return { summary: content.slice(0, 500), verdict: 'COMMENT', comments: [] };
     } catch (error) {
       logger.warn('Failed to parse Claude response:', error);
-
-      // Fallback: create a simple review
-      return {
-        summary: content.slice(0, 500),
-        comments: [],
-      };
+      return { summary: content.slice(0, 500), verdict: 'COMMENT', comments: [] };
     }
   }
 }

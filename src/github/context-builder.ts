@@ -1,5 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import { logger } from '../utils/logger.js';
+import type { ExistingThread, PreviousReviewRound } from '../ai/base-client.js';
 
 export interface CommitInfo {
   sha: string;
@@ -29,17 +30,18 @@ export interface PRContext {
   author: string;
   baseBranch: string;
   headBranch: string;
-  
+  headSha: string;
+
   // Commit history - the "what" and "why"
   commits: CommitInfo[];
   commitCount: number;
-  
+
   // Linked issues - business context
   linkedIssues: LinkedIssue[];
-  
+
   // Related files - broader codebase context
   relatedFiles: RelatedFile[];
-  
+
   // Changed files with full context
   changedFiles: Array<{
     filename: string;
@@ -47,16 +49,23 @@ export interface PRContext {
     content?: string;
     status: string;
   }>;
-  
+
   // Dependencies and imports
   affectedDependencies: string[];
-  
+
   // Statistics
   stats: {
     totalFiles: number;
     totalAdditions: number;
     totalDeletions: number;
   };
+
+  // ── Review-round context ────────────────────────────────────────────────
+  /** How many times this PR has already been reviewed by the bot. */
+  reviewRound: number;
+  openThreads: ExistingThread[];
+  resolvedThreads: ExistingThread[];
+  previousReviews: PreviousReviewRound[];
 }
 
 export class PRContextBuilder {
@@ -77,11 +86,12 @@ export class PRContextBuilder {
     logger.info('Building comprehensive PR context...');
 
     // Fetch all context in parallel for efficiency
-    const [prData, commits, linkedIssues, files] = await Promise.all([
+    const [prData, commits, linkedIssues, files, reviewHistory] = await Promise.all([
       this.fetchPRData(owner, repo, prNumber),
       this.fetchCommitHistory(owner, repo, prNumber),
       this.fetchLinkedIssues(owner, repo, prNumber),
       this.fetchChangedFiles(owner, repo, prNumber),
+      this.fetchReviewHistory(owner, repo, prNumber),
     ]);
 
     // Analyze dependencies and find related files
@@ -99,6 +109,7 @@ export class PRContextBuilder {
       author: prData.author,
       baseBranch: prData.baseBranch,
       headBranch: prData.headBranch,
+      headSha: prData.headSha,
       commits,
       commitCount: commits.length,
       linkedIssues,
@@ -106,6 +117,10 @@ export class PRContextBuilder {
       changedFiles: files,
       affectedDependencies,
       stats: prData.stats,
+      reviewRound: reviewHistory.round,
+      openThreads: reviewHistory.openThreads,
+      resolvedThreads: reviewHistory.resolvedThreads,
+      previousReviews: reviewHistory.previousReviews,
     };
   }
 
@@ -365,6 +380,119 @@ export class PRContextBuilder {
     }
 
     return relatedFiles;
+  }
+
+  /**
+   * Fetch the review history for this PR: how many bot review rounds have happened,
+   * which threads are open, and which have been resolved by the developer.
+   */
+  private async fetchReviewHistory(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<{
+    round: number;
+    openThreads: ExistingThread[];
+    resolvedThreads: ExistingThread[];
+    previousReviews: PreviousReviewRound[];
+  }> {
+    try {
+      // ── 1. Fetch review threads via GraphQL (authoritative resolved state) ──
+      const query = `
+        query($owner: String!, $repo: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $prNumber) {
+              reviewThreads(first: 100) {
+                nodes {
+                  isResolved
+                  comments(first: 10) {
+                    nodes {
+                      databaseId
+                      path
+                      line
+                      body
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `;
+
+      const gqlResult = await this.octokit.graphql<{
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: Array<{
+                isResolved: boolean;
+                comments: {
+                  nodes: Array<{
+                    databaseId: number;
+                    path: string;
+                    line: number | null;
+                    body: string;
+                  }>;
+                };
+              }>;
+            };
+          };
+        };
+      }>(query, { owner, repo, prNumber });
+
+      const openThreads: ExistingThread[] = [];
+      const resolvedThreads: ExistingThread[] = [];
+
+      for (const thread of gqlResult.repository.pullRequest.reviewThreads.nodes) {
+        // Only track threads that were created by the bot
+        const botComments = thread.comments.nodes.filter((c) =>
+          c.body.includes('<!-- bob-pr-review -->')
+        );
+        if (botComments.length === 0) continue;
+
+        // Use the first bot comment as the representative for this thread
+        const rep = botComments[0];
+        const t: ExistingThread = {
+          path: rep.path,
+          line: rep.line,
+          body: rep.body,
+          resolved: thread.isResolved,
+        };
+        (thread.isResolved ? resolvedThreads : openThreads).push(t);
+      }
+
+      // ── 2. Fetch previous bot reviews (summary + verdict) ──────────────────
+      const { data: reviews } = await this.octokit.pulls.listReviews({
+        owner,
+        repo,
+        pull_number: prNumber,
+      });
+
+      const previousReviews: PreviousReviewRound[] = reviews
+        .filter((r) => r.body?.includes('<!-- bob-pr-review -->'))
+        .map((r, idx) => ({
+          round: idx + 1,
+          submittedAt: r.submitted_at || '',
+          verdict: r.state,
+          // Extract summary text after the marker — strip HTML comments
+          summary: (r.body || '').replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 500),
+        }));
+
+      return {
+        round: previousReviews.length + 1,
+        openThreads,
+        resolvedThreads,
+        previousReviews,
+      };
+    } catch (error) {
+      logger.warn('Failed to fetch review history, treating as first review:', error);
+      return {
+        round: 1,
+        openThreads: [],
+        resolvedThreads: [],
+        previousReviews: [],
+      };
+    }
   }
 
   /**
