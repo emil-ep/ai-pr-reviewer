@@ -16,6 +16,8 @@ export interface ReviewResult {
 export interface ExistingThread {
   /** GraphQL node ID of the thread — used to call resolveReviewThread mutation. */
   threadNodeId: string;
+  /** REST database ID of the first bot comment in the thread — used to post a reply. */
+  commentId: number;
   path: string;
   line: number | null;
   body: string;

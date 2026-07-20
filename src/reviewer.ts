@@ -45,7 +45,11 @@ export class PRReviewer {
     this.aiClient = aiClient;
   }
 
-  async reviewPR(owner: string, repo: string, prNumber: number): Promise<void> {
+  async reviewPR(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<void> {
     logger.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
     try {
@@ -105,9 +109,13 @@ export class PRReviewer {
       // ── Step 4: Auto-resolve threads that are now fixed ───────────────────
       // On follow-up reviews, any open bot thread that the AI did NOT flag again
       // (i.e. it no longer appears in the new comment set) is considered addressed.
-      // Resolve it programmatically so the PR timeline stays clean.
+      // Reply with a "Fixed" note referencing the relevant commit, then resolve
+      // the thread so the PR timeline stays clean.
       if (context.reviewRound > 1 && context.openThreads.length > 0) {
-        await this.resolveFixedThreads(context.openThreads, review.comments);
+        await this.resolveFixedThreads(
+          owner, repo, prNumber,
+          context.openThreads, review.comments, context.commits
+        );
       }
 
       logger.info('✅ Review submitted successfully');
@@ -175,11 +183,18 @@ export class PRReviewer {
    * the exact same file+line combination.  This avoids incorrectly resolving
    * a thread when the AI raises a *different* issue on the same line.
    *
+   * For each such thread, we post a reply that references the commit(s) that
+   * touched the same file, then resolve the thread so the PR timeline is clean.
+   *
    * Failures are logged but do not abort — resolving threads is best-effort.
    */
   private async resolveFixedThreads(
+    owner: string,
+    repo: string,
+    prNumber: number,
     openThreads: ExistingThread[],
-    newComments: ReviewResult['comments']
+    newComments: ReviewResult['comments'],
+    commits: Array<{ sha: string; message: string }>
   ): Promise<void> {
     // Build a set of "file:line" keys that the new review still flags
     const stillFlagged = new Set(
@@ -199,14 +214,68 @@ export class PRReviewer {
 
     logger.info(`Auto-resolving ${toResolve.length} thread(s) no longer flagged in this review`);
 
+    // Build the base URL for commit links from env (same as GitHub Actions context)
+    const repoUrl = `https://github.com/${owner}/${repo}`;
+
     for (const thread of toResolve) {
       try {
+        // Find the most recent commit that touched this file — it is most
+        // likely the one that addressed the review comment.
+        const fixingCommit = this.findFixingCommit(thread.path, commits);
+        const fixedReply = this.buildFixedReply(fixingCommit, repoUrl);
+
+        // Post the reply first — if it fails, skip resolving too so the
+        // thread remains visible rather than silently disappearing.
+        await this.githubClient.replyToReviewComment(
+          owner, repo, prNumber, thread.commentId, fixedReply
+        );
+
         await this.githubClient.resolveThread(thread.threadNodeId);
-        logger.info(`  ✔ Resolved thread at ${thread.path}${thread.line ? `:${thread.line}` : ''}`);
+        logger.info(`  ✔ Marked fixed and resolved thread at ${thread.path}${thread.line ? `:${thread.line}` : ''}`);
       } catch (error) {
-        logger.warn(`  ✘ Could not resolve thread ${thread.threadNodeId}:`, error);
+        logger.warn(`  ✘ Could not mark/resolve thread ${thread.threadNodeId}:`, error);
       }
     }
+  }
+
+  /**
+   * Find the most recent commit in the list that touches the given file path.
+   * Falls back to the overall most recent commit when no file-specific match
+   * is found (e.g., the change was a refactor that moved the file).
+   */
+  private findFixingCommit(
+    filePath: string,
+    commits: Array<{ sha: string; message: string }>
+  ): { sha: string; message: string } | null {
+    if (commits.length === 0) return null;
+    // Commits arrive oldest-first from the GitHub API; iterate in reverse
+    // to get the most recent one first.
+    const reversed = [...commits].reverse();
+    // A commit message that contains the filename is a strong signal.
+    const byName = reversed.find((c) =>
+      c.message.includes(filePath) || c.message.includes(filePath.split('/').pop() ?? '')
+    );
+    return byName ?? reversed[0];
+  }
+
+  /**
+   * Build the markdown reply body that gets posted to the fixed thread.
+   */
+  private buildFixedReply(
+    commit: { sha: string; message: string } | null,
+    repoUrl: string
+  ): string {
+    if (!commit) {
+      return `${BOT_MARKER}\n✅ **Fixed** — this issue appears to have been addressed in the latest push.`;
+    }
+    const short = commit.sha.slice(0, 7);
+    const link  = `${repoUrl}/commit/${commit.sha}`;
+    const subject = commit.message.split('\n')[0].slice(0, 72);
+    return (
+      `${BOT_MARKER}\n` +
+      `✅ **Fixed** in [\`${short}\`](${link})\n` +
+      `> ${subject}`
+    );
   }
 
   private formatReviewBody(review: ReviewResult, round: number): string {

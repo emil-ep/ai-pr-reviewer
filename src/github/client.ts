@@ -356,6 +356,33 @@ export class GitHubClient {
   }
 
   /**
+   * Post a reply to an existing inline review comment.
+   * GitHub's "create reply for a review comment" endpoint requires the
+   * comment_id of the comment being replied to, not the thread node ID.
+   *
+   * @param commentId  The REST database ID of the comment to reply to.
+   */
+  async replyToReviewComment(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    commentId: number,
+    body: string
+  ): Promise<void> {
+    try {
+      await this.octokit.pulls.createReplyForReviewComment({
+        owner,
+        repo,
+        pull_number: prNumber,
+        comment_id: commentId,
+        body,
+      });
+    } catch (error) {
+      throw new Error(`Failed to reply to review comment ${commentId}: ${error}`);
+    }
+  }
+
+  /**
    * Resolve a review thread using the GitHub GraphQL `resolveReviewThread` mutation.
    * This is the only way to mark a thread as resolved programmatically — there is
    * no REST endpoint for it.

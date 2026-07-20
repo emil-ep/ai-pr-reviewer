@@ -507,6 +507,7 @@ export class PRContextBuilder {
         const rep = botComments[0];
         const t: ExistingThread = {
           threadNodeId: thread.id,
+          commentId: rep.databaseId,
           path: rep.path,
           line: rep.line,
           body: rep.body,
