@@ -1,4 +1,4 @@
-import { AIClient, ReviewResult } from './ai/base-client.js';
+import { AIClient, ExistingThread, ReviewResult } from './ai/base-client.js';
 import { GitHubClient } from './github/client.js';
 import { PRContextBuilder } from './github/context-builder.js';
 import { logger } from './utils/logger.js';
@@ -102,6 +102,14 @@ export class PRReviewer {
       );
       await this.submitReview(owner, repo, prNumber, context.headSha, review, context.reviewRound);
 
+      // ── Step 4: Auto-resolve threads that are now fixed ───────────────────
+      // On follow-up reviews, any open bot thread that the AI did NOT flag again
+      // (i.e. it no longer appears in the new comment set) is considered addressed.
+      // Resolve it programmatically so the PR timeline stays clean.
+      if (context.reviewRound > 1 && context.openThreads.length > 0) {
+        await this.resolveFixedThreads(context.openThreads, review.comments);
+      }
+
       logger.info('✅ Review submitted successfully');
     } catch (error) {
       logger.error('Failed to review PR:', error);
@@ -157,6 +165,47 @@ export class PRReviewer {
         reviewBody,
         []
       );
+    }
+  }
+
+  /**
+   * Resolve open threads whose issues are no longer present in the new review.
+   *
+   * A thread is considered "fixed" when the new review contains no comment on
+   * the exact same file+line combination.  This avoids incorrectly resolving
+   * a thread when the AI raises a *different* issue on the same line.
+   *
+   * Failures are logged but do not abort — resolving threads is best-effort.
+   */
+  private async resolveFixedThreads(
+    openThreads: ExistingThread[],
+    newComments: ReviewResult['comments']
+  ): Promise<void> {
+    // Build a set of "file:line" keys that the new review still flags
+    const stillFlagged = new Set(
+      newComments
+        .filter((c) => c.path && c.line)
+        .map((c) => `${c.path}:${c.line}`)
+    );
+
+    const toResolve = openThreads.filter((t) => {
+      // A thread without a line number is a general (file-level) comment —
+      // only resolve it if no new comment targets the same file at all.
+      const key = t.line ? `${t.path}:${t.line}` : t.path;
+      return !stillFlagged.has(key);
+    });
+
+    if (toResolve.length === 0) return;
+
+    logger.info(`Auto-resolving ${toResolve.length} thread(s) no longer flagged in this review`);
+
+    for (const thread of toResolve) {
+      try {
+        await this.githubClient.resolveThread(thread.threadNodeId);
+        logger.info(`  ✔ Resolved thread at ${thread.path}${thread.line ? `:${thread.line}` : ''}`);
+      } catch (error) {
+        logger.warn(`  ✘ Could not resolve thread ${thread.threadNodeId}:`, error);
+      }
     }
   }
 

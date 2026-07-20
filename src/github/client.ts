@@ -355,6 +355,30 @@ export class GitHubClient {
     }
   }
 
+  /**
+   * Resolve a review thread using the GitHub GraphQL `resolveReviewThread` mutation.
+   * This is the only way to mark a thread as resolved programmatically — there is
+   * no REST endpoint for it.
+   *
+   * @param threadNodeId  The GraphQL node `id` of the PullRequestReviewThread.
+   */
+  async resolveThread(threadNodeId: string): Promise<void> {
+    const mutation = `
+      mutation($threadId: ID!) {
+        resolveReviewThread(input: { threadId: $threadId }) {
+          thread { id isResolved }
+        }
+      }
+    `;
+    try {
+      await this.octokit.graphql(mutation, { threadId: threadNodeId });
+    } catch (error) {
+      // Non-fatal: log and continue — failure to resolve a thread should
+      // never block the review from being posted.
+      throw new Error(`Failed to resolve thread ${threadNodeId}: ${error}`);
+    }
+  }
+
   async updatePRDescription(
     owner: string,
     repo: string,

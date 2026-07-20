@@ -440,6 +440,7 @@ export class PRContextBuilder {
               reviewThreads(first: 100) {
                 pageInfo { hasNextPage }
                 nodes {
+                  id
                   isResolved
                   comments(first: 50) {
                     pageInfo { hasNextPage }
@@ -463,6 +464,7 @@ export class PRContextBuilder {
             reviewThreads: {
               pageInfo: { hasNextPage: boolean };
               nodes: Array<{
+                id: string;
                 isResolved: boolean;
                 comments: {
                   pageInfo: { hasNextPage: boolean };
@@ -504,6 +506,7 @@ export class PRContextBuilder {
         // Use the first bot comment as the representative for this thread
         const rep = botComments[0];
         const t: ExistingThread = {
+          threadNodeId: thread.id,
           path: rep.path,
           line: rep.line,
           body: rep.body,

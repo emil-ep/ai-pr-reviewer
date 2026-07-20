@@ -14,6 +14,8 @@ export interface ReviewResult {
 
 /** An existing review thread on the PR — used so the AI can skip already-addressed issues. */
 export interface ExistingThread {
+  /** GraphQL node ID of the thread — used to call resolveReviewThread mutation. */
+  threadNodeId: string;
   path: string;
   line: number | null;
   body: string;
