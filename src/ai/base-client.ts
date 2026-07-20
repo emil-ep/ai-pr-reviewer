@@ -139,3 +139,31 @@ export interface AIClient {
   generateCommitMessage?(diffSummary: GitDiffSummary): Promise<CommitMessageResult>;
   healthCheck?(): Promise<boolean>;
 }
+
+/**
+ * Infer a review verdict from comment severities when the AI omits the
+ * `verdict` field (or returns an unrecognised value).
+ *
+ * Rules (mirrors the prompt instructions given to the AI):
+ *   - Any critical comment  → REQUEST_CHANGES
+ *   - Any warning comment   → COMMENT  (neutral, needs attention)
+ *   - Only suggestions / no comments → APPROVE
+ *
+ * The explicit AI-supplied verdict always wins when it is present and valid,
+ * so this function is only called as a fallback.
+ */
+export function inferVerdict(
+  aiVerdict: string | undefined,
+  comments: Array<{ severity?: string }>
+): ReviewResult['verdict'] {
+  const valid = new Set<string>(['APPROVE', 'REQUEST_CHANGES', 'COMMENT']);
+  if (aiVerdict && valid.has(aiVerdict)) {
+    return aiVerdict as ReviewResult['verdict'];
+  }
+  // AI omitted or returned an unrecognised verdict — derive it from comments.
+  const hasCritical = comments.some((c) => c.severity === 'critical');
+  const hasWarning  = comments.some((c) => c.severity === 'warning');
+  return hasCritical ? 'REQUEST_CHANGES'
+       : hasWarning  ? 'COMMENT'
+       :               'APPROVE';
+}

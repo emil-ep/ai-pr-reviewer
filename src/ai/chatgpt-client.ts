@@ -1,4 +1,4 @@
-import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
+import { AIClient, CommitMessageResult, GitDiffSummary, PRData, PRDescriptionResult, ReviewComment, ReviewResult, inferVerdict } from './base-client.js';
 import {
   sanitizeTitle,
   sanitizeDescription,
@@ -595,14 +595,15 @@ Rules:
 
       const jsonStr = jsonMatch[1] || content;
       const parsed = JSON.parse(jsonStr);
+      const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
       return {
         summary: parsed.summary || 'Review completed',
-        verdict: parsed.verdict ?? 'COMMENT',
-        comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+        verdict: inferVerdict(parsed.verdict, comments),
+        comments,
       };
     } catch (error) {
       logger.warn('Failed to parse ChatGPT response:', error);
-      return { summary: content.slice(0, 500), verdict: 'COMMENT', comments: [] };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     }
   }
 }

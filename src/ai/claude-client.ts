@@ -1,4 +1,4 @@
-import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
+import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult, inferVerdict } from './base-client.js';
 import {
   sanitizeTitle,
   sanitizeDescription,
@@ -406,18 +406,19 @@ Rules:
       if (jsonMatch) {
         const jsonStr = jsonMatch[1] || jsonMatch[0];
         const parsed = JSON.parse(jsonStr);
+        const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
         return {
           summary: parsed.summary || 'Review completed',
-          verdict: parsed.verdict ?? 'COMMENT',
-          comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+          verdict: inferVerdict(parsed.verdict, comments),
+          comments,
         };
       }
 
       logger.warn('Could not parse JSON from Claude response, using text as summary');
-      return { summary: content.slice(0, 500), verdict: 'COMMENT', comments: [] };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     } catch (error) {
       logger.warn('Failed to parse Claude response:', error);
-      return { summary: content.slice(0, 500), verdict: 'COMMENT', comments: [] };
+      return { summary: content.slice(0, 500), verdict: inferVerdict(undefined, []), comments: [] };
     }
   }
 }
