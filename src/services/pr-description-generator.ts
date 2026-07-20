@@ -36,7 +36,6 @@ export class PRDescriptionGenerator {
       resolvedThreads: [],
       previousReviews: [],
       commits: context.commits,
-      linkedIssues: context.linkedIssues,
       relatedFiles: context.relatedFiles,
       affectedDependencies: context.affectedDependencies,
       files: context.changedFiles,
@@ -68,7 +67,7 @@ export class PRDescriptionGenerator {
       logger.info('Building PR context...');
       const context = await this.contextBuilder.buildContext(owner, repo, prNumber);
       
-      logger.info(`Context built: ${context.commitCount} commits, ${context.linkedIssues.length} issues, ${context.changedFiles.length} files`);
+      logger.info(`Context built: ${context.commitCount} commits, ${context.changedFiles.length} files`);
 
       // Step 2: Convert context to PRData format
       const prData = this.convertContextToPRData(context);

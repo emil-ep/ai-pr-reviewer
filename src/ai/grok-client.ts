@@ -1,4 +1,4 @@
-import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult } from './base-client.js';
+import { AIClient, PRData, PRDescriptionResult, ReviewComment, ReviewResult, inferVerdict } from './base-client.js';
 
 import OpenAI from 'openai';
 import { logger } from '../utils/logger.js';
@@ -54,7 +54,8 @@ export class GrokClient implements AIClient {
       }
 
       const result = this.parseReviewResponse(content);
-      logger.info(`Review complete: ${result.comments.length} comments generated`);
+      result.verdict = inferVerdict(result.verdict, result.comments);
+      logger.info(`Review complete: ${result.comments.length} comments, verdict=${result.verdict}`);
 
       return result;
     } catch (error) {
@@ -137,19 +138,6 @@ export class GrokClient implements AIClient {
       prompt += '\n';
     }
 
-    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
-      prompt += `## Linked Issues\n`;
-      for (const issue of prData.linkedIssues) {
-        prompt += `### Issue #${issue.number}: ${issue.title}\n`;
-        prompt += `- State: ${issue.state}\n`;
-        prompt += `- Labels: ${issue.labels.join(', ') || 'none'}\n`;
-        if (issue.body) {
-          prompt += `- Description: ${issue.body.slice(0, 200)}${issue.body.length > 200 ? '...' : ''}\n`;
-        }
-        prompt += '\n';
-      }
-    }
-
     if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
       prompt += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
     }
@@ -196,46 +184,92 @@ Return ONLY the markdown description.`;
   }
 
   private buildReviewPrompt(prData: PRData): string {
-    let prompt = `You are an expert code reviewer. Please review this Pull Request and provide detailed feedback.
+    const isFollowUp = prData.reviewRound > 1;
 
-# Pull Request Review
+    let prompt = `You are an expert code reviewer. Review this Pull Request and provide detailed, consistent feedback.
 
-## PR Title
-${prData.title}
+# Pull Request Review — Round ${prData.reviewRound}
+
+## PR Info
+- **Title:** ${prData.title}
+- **Author:** ${prData.author}
+- **Branch:** ${prData.headBranch} → ${prData.baseBranch}
+- **Review round:** ${prData.reviewRound} (${isFollowUp ? 'follow-up review' : 'initial review'})
 
 ## PR Description
 ${prData.description || 'No description provided'}
 
-## Changed Files
-
 `;
 
+    // ── Review history (critical for consistency on re-reviews) ──────────────
+    if (prData.previousReviews.length > 0) {
+      prompt += `## Previous Review Rounds\n`;
+      for (const prev of prData.previousReviews) {
+        prompt += `### Round ${prev.round} (${prev.submittedAt}, verdict: ${prev.verdict})\n`;
+        prompt += `${prev.summary}\n\n`;
+      }
+    }
+
+    if (prData.openThreads.length > 0) {
+      prompt += `## Still-Open Issues From Previous Reviews\n`;
+      prompt += `These issues were raised in earlier reviews and have NOT been resolved by the developer.\n`;
+      prompt += `You MUST flag these again with the same severity.\n\n`;
+      for (const t of prData.openThreads) {
+        prompt += `- **${t.path}${t.line ? `:${t.line}` : ''}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 200)}\n`;
+      }
+      prompt += '\n';
+    }
+
+    if (prData.resolvedThreads.length > 0) {
+      prompt += `## Issues Already Resolved by Developer\n`;
+      prompt += `Do NOT re-raise these — they have been addressed.\n\n`;
+      for (const t of prData.resolvedThreads) {
+        prompt += `- **${t.path}${t.line ? `:${t.line}` : ''}**: ${t.body.replace(/<!--[\s\S]*?-->/g, '').trim().slice(0, 200)}\n`;
+      }
+      prompt += '\n';
+    }
+
+    // ── Changed files ─────────────────────────────────────────────────────────
+    prompt += `## Changed Files\n\n`;
     for (const file of prData.files) {
       prompt += `### File: ${file.filename}\n\n`;
-
       if (file.patch) {
         prompt += `**Changes (diff):**\n\`\`\`diff\n${file.patch}\n\`\`\`\n\n`;
       }
-
       if (file.content) {
         prompt += `**Full content:**\n\`\`\`\n${file.content.slice(0, 5000)}\n\`\`\`\n\n`;
       }
     }
 
     prompt += `
-Please analyze these changes and provide your review in the following JSON format:
+## Instructions
+
+Respond ONLY with a JSON object matching this schema exactly:
 
 {
   "summary": "Brief overview of changes and overall assessment",
+  "verdict": "APPROVE | REQUEST_CHANGES | COMMENT",
   "comments": [
     {
       "path": "file/path.ts",
       "line": 42,
-      "severity": "critical",
+      "severity": "critical | warning | suggestion",
       "message": "Detailed explanation of the issue and how to fix it"
     }
   ]
 }
+
+Verdict rules (follow them strictly — do not downgrade on re-reviews unless the code changed):
+- REQUEST_CHANGES — one or more critical issues exist
+- COMMENT        — warnings but no critical issues
+- APPROVE        — only suggestions or no issues
+
+Severity rules (apply consistently across review rounds):
+- critical   — security vulnerability, data loss risk, broken logic, crash risk
+- warning    — non-ideal pattern, missing error handling, performance concern
+- suggestion — style, naming, minor readability
+
+${isFollowUp ? `IMPORTANT: This is round ${prData.reviewRound}. Re-raise ALL open issues listed above with the same severity. Only omit an issue if its code has been changed/removed in the diff.` : ''}
 
 Focus on:
 1. Security vulnerabilities (SQL injection, XSS, authentication issues)
@@ -245,7 +279,7 @@ Focus on:
 5. Missing error handling
 6. Code maintainability
 
-Provide specific, actionable feedback with file paths and line numbers. Return ONLY the JSON object, no additional text.`;
+Return ONLY the JSON object, no additional text.`;
 
     return prompt;
   }

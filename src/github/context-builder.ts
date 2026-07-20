@@ -22,14 +22,6 @@ export interface CommitInfo {
   date: string;
 }
 
-export interface LinkedIssue {
-  number: number;
-  title: string;
-  body: string;
-  labels: string[];
-  state: string;
-}
-
 export interface RelatedFile {
   path: string;
   reason: string; // Why this file is related
@@ -48,9 +40,6 @@ export interface PRContext {
   // Commit history - the "what" and "why"
   commits: CommitInfo[];
   commitCount: number;
-
-  // Linked issues - business context
-  linkedIssues: LinkedIssue[];
 
   // Related files - broader codebase context
   relatedFiles: RelatedFile[];
@@ -118,10 +107,9 @@ export class PRContextBuilder {
     logger.info('Building comprehensive PR context...');
 
     // Fetch all context in parallel for efficiency
-    const [prData, commits, linkedIssues, files, reviewHistory] = await Promise.all([
+    const [prData, commits, files, reviewHistory] = await Promise.all([
       this.fetchPRData(owner, repo, prNumber),
       this.fetchCommitHistory(owner, repo, prNumber),
-      this.fetchLinkedIssues(owner, repo, prNumber),
       this.fetchChangedFiles(owner, repo, prNumber),
       this.fetchReviewHistory(owner, repo, prNumber),
     ]);
@@ -144,7 +132,6 @@ export class PRContextBuilder {
       headSha: prData.headSha,
       commits,
       commitCount: commits.length,
-      linkedIssues,
       relatedFiles,
       changedFiles: files,
       affectedDependencies,
@@ -215,76 +202,6 @@ export class PRContextBuilder {
   }
 
   /**
-   * Extract linked issues from PR description and commits
-   * Looks for patterns like: #123, fixes #123, closes #123, resolves #123
-   */
-  private async fetchLinkedIssues(
-    owner: string,
-    repo: string,
-    prNumber: number
-  ): Promise<LinkedIssue[]> {
-    try {
-      const { data: pr } = await this.octokit.pulls.get({
-        owner,
-        repo,
-        pull_number: prNumber,
-      });
-
-      // Extract issue numbers from PR body
-      const issueNumbers = this.extractIssueNumbers(pr.body || '');
-
-      // Fetch issue details
-      const issues: LinkedIssue[] = [];
-      for (const issueNumber of issueNumbers.slice(0, 5)) {
-        // Limit to 5 issues
-        try {
-          const { data: issue } = await this.octokit.issues.get({
-            owner,
-            repo,
-            issue_number: issueNumber,
-          });
-
-          issues.push({
-            number: issue.number,
-            title: issue.title,
-            body: issue.body || '',
-            labels: issue.labels.map((l) =>
-              typeof l === 'string' ? l : l.name || ''
-            ),
-            state: issue.state,
-          });
-        } catch (error) {
-          logger.warn(`Failed to fetch issue #${issueNumber}:`, error);
-        }
-      }
-
-      return issues;
-    } catch (error) {
-      logger.warn('Failed to fetch linked issues:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Extract issue numbers from text
-   */
-  private extractIssueNumbers(text: string): number[] {
-    const patterns = [
-      /#(\d+)/g, // #123
-      /(?:fixes|closes|resolves|fix|close|resolve)\s+#(\d+)/gi, // fixes #123
-    ];
-
-    const numbers = new Set<number>();
-    for (const pattern of patterns) {
-      const matches = text.matchAll(pattern);
-      for (const match of matches) {
-        numbers.add(parseInt(match[1], 10));
-      }
-    }
-
-    return Array.from(numbers);
-  }
-
   /**
    * Fetch changed files with full content
    */
