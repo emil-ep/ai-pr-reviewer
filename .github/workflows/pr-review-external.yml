@@ -254,13 +254,28 @@ jobs:
         working-directory: ai-reviewer
         run: npm run build
       
+      - name: Resolve PR number and repo
+        id: pr
+        run: |
+          # PR_NUMBER: pull_request events expose it at pull_request.number;
+          # issue_comment events expose it at issue.number.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+          # REPO_NAME: github.repository is always "owner/repo" on every event
+          # type — strip the owner prefix to get the bare repo name.
+          echo "repo_name=${{ github.event.repository.name }}" >> $GITHUB_OUTPUT
+
       - name: Run AI PR Review
         working-directory: ai-reviewer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER:  ${{ steps.pr.outputs.number }}
           REPO_OWNER: ${{ github.repository_owner }}
-          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_NAME:  ${{ steps.pr.outputs.repo_name }}
           
           # AI Provider Configuration
           AI_PROVIDER: ${{ secrets.AI_PROVIDER }}
