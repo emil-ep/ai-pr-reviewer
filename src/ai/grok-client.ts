@@ -137,19 +137,6 @@ export class GrokClient implements AIClient {
       prompt += '\n';
     }
 
-    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
-      prompt += `## Linked Issues\n`;
-      for (const issue of prData.linkedIssues) {
-        prompt += `### Issue #${issue.number}: ${issue.title}\n`;
-        prompt += `- State: ${issue.state}\n`;
-        prompt += `- Labels: ${issue.labels.join(', ') || 'none'}\n`;
-        if (issue.body) {
-          prompt += `- Description: ${issue.body.slice(0, 200)}${issue.body.length > 200 ? '...' : ''}\n`;
-        }
-        prompt += '\n';
-      }
-    }
-
     if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
       prompt += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
     }

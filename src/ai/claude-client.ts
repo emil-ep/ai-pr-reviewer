@@ -3,7 +3,6 @@ import {
   sanitizeTitle,
   sanitizeDescription,
   sanitizeCommitMessage,
-  sanitizeIssueBody,
   sanitizeThreadBody,
   sanitizeSummary,
   sanitizeIdentifier,
@@ -142,19 +141,6 @@ export class ClaudeClient implements AIClient {
       prompt += '\n';
     }
 
-    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
-      prompt += `## Linked Issues\n`;
-      for (const issue of prData.linkedIssues) {
-        prompt += `### Issue #${issue.number}: ${issue.title}\n`;
-        prompt += `- State: ${issue.state}\n`;
-        prompt += `- Labels: ${issue.labels.join(', ') || 'none'}\n`;
-        if (issue.body) {
-          prompt += `- Description: ${issue.body.slice(0, 200)}${issue.body.length > 200 ? '...' : ''}\n`;
-        }
-        prompt += '\n';
-      }
-    }
-
     if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {
       prompt += `## Affected Dependencies\n${prData.affectedDependencies.join(', ')}\n\n`;
     }
@@ -253,18 +239,6 @@ ${desc}
         h += `- \`${c.sha.slice(0, 7)}\` **${sanitizeIdentifier(c.author)}**: ${sanitizeCommitMessage(c.message)}\n`;
       }
       h += '\n';
-    }
-
-    if (prData.linkedIssues && prData.linkedIssues.length > 0) {
-      h += `## Linked Issues\n`;
-      for (const issue of prData.linkedIssues) {
-        h += `### #${issue.number} — ${sanitizeTitle(issue.title)} [${issue.state}]\n`;
-        h += `Labels: ${issue.labels.join(', ') || 'none'}\n`;
-        if (issue.body) {
-          h += `${sanitizeIssueBody(issue.body)}\n`;
-        }
-        h += '\n';
-      }
     }
 
     if (prData.affectedDependencies && prData.affectedDependencies.length > 0) {

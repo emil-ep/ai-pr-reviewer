@@ -59,7 +59,7 @@ export class PRReviewer {
 
       logger.info(
         `Context gathered: round=${context.reviewRound}, ` +
-        `commits=${context.commits.length}, issues=${context.linkedIssues.length}, ` +
+        `commits=${context.commits.length}, ` +
         `relatedFiles=${context.relatedFiles.length}, deps=${context.affectedDependencies.length}, ` +
         `openThreads=${context.openThreads.length}, resolvedThreads=${context.resolvedThreads.length}`
       );
@@ -85,7 +85,6 @@ export class PRReviewer {
         resolvedThreads: context.resolvedThreads,
         previousReviews: context.previousReviews,
         commits: context.commits,
-        linkedIssues: context.linkedIssues,
         relatedFiles: context.relatedFiles,
         affectedDependencies: context.affectedDependencies,
         files: context.changedFiles,

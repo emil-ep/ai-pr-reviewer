@@ -58,14 +58,6 @@ export interface PRData {
     date: string;
   }>;
   
-  linkedIssues?: Array<{
-    number: number;
-    title: string;
-    body: string;
-    labels: string[];
-    state: string;
-  }>;
-  
   relatedFiles?: Array<{
     path: string;
     reason: string;
